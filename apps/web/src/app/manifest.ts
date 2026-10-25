@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Mercado do Futuro",
-    short_name: "Mercado",
+    name: "FastMarket",
+    short_name: "FastMarket",
     description: "Os supermercados da sua região em um só app.",
     start_url: "/",
     display: "standalone",

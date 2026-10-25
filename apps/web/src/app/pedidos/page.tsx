@@ -2,16 +2,23 @@
 
 import Link from "next/link";
 import { formatBRL } from "@mercado/shared";
-import { allStores, useDemo, useHydrated } from "@/lib/demo-store";
+import { useApp } from "@/lib/app-store";
+import { Gate } from "@/components/gate";
 import { Empty, StatusBadge, formatSlot } from "@/components/ui";
 
 export default function OrdersPage() {
-  const s = useDemo();
-  const hydrated = useHydrated();
-  if (!hydrated) return null;
+  return (
+    <Gate back="/pedidos">
+      <OrdersList />
+    </Gate>
+  );
+}
 
-  const stores = allStores(s);
-  if (s.orders.length === 0) {
+function OrdersList() {
+  const s = useApp();
+  const stores = s.stores;
+  const orders = s.orders.filter((o) => o.customerId === s.user?.id);
+  if (orders.length === 0) {
     return (
       <Empty emoji="🧾" title="Você ainda não fez pedidos">
         <Link href="/" className="btn-primary">Começar a comprar</Link>
@@ -23,7 +30,7 @@ export default function OrdersPage() {
     <div className="mx-auto max-w-2xl space-y-4">
       <h1 className="text-2xl font-bold">Meus pedidos</h1>
       <ul className="space-y-3">
-        {s.orders.map((o) => (
+        {orders.map((o) => (
           <li key={o.id}>
             <Link href={`/pedidos/${o.id}`} className="card flex items-center gap-3 p-4 hover:border-primary">
               <div className="min-w-0 flex-1">

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Suspense, useMemo, useState } from "react";
 import { CartStoreConflictError, deliversTo, formatBRL, type Product } from "@mercado/shared";
-import { allStores, categories, demo, storeProducts, useDemo } from "@/lib/demo-store";
+import { api, useApp } from "@/lib/app-store";
 import { Empty, Thumb } from "@/components/ui";
 
 const UNIT_LABEL: Record<Product["unit"], string> = { un: "un", kg: "kg", g: "g", l: "L", ml: "ml", pct: "pct" };
@@ -19,14 +19,15 @@ export default function StorePage() {
 
 function StoreDetail() {
   const { slug } = useParams<{ slug: string }>();
-  const s = useDemo();
+  const s = useApp();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string | null>(null);
 
-  const store = useMemo(() => allStores(s).find((st) => st.slug === slug), [s, slug]);
-  const products = useMemo(() => (store ? storeProducts(s, store.id).filter((p) => p.active) : []), [s, store]);
+  const store = useMemo(() => s.stores.find((st) => st.slug === slug), [s, slug]);
+  const products = useMemo(() => (store ? s.products.filter((p) => p.storeId === store.id).filter((p) => p.active) : []), [s, store]);
 
-  if (!store || store.status !== "approved") {
+  if (!s.ready) return <p className="text-muted">Carregando…</p>;
+  if (!store || (store.status !== "approved" && store.ownerId !== s.user?.id)) {
     return (
       <Empty emoji="🔎" title="Loja não encontrada">
         <Link href="/" className="btn-ghost">Ver lojas</Link>
@@ -34,21 +35,21 @@ function StoreDetail() {
     );
   }
 
-  const storeCategories = categories.filter((c) => products.some((p) => p.categoryId === c.id));
+  const storeCategories = s.categories.filter((c) => products.some((p) => p.categoryId === c.id));
   const q = query.trim().toLowerCase();
   const visible = products.filter(
     (p) => (!category || p.categoryId === category) && (!q || p.name.toLowerCase().includes(q)),
   );
   const qty = (id: string) => (s.cart.storeId === store.id ? s.cart.items.find((i) => i.productId === id)?.quantity ?? 0 : 0);
-  const delivers = deliversTo(store, s.address.location);
+  const delivers = s.address ? deliversTo(store, s.address.location) : false;
 
   function add(p: Product) {
     try {
-      demo.addToCart(p);
+      api.addToCart(p);
     } catch (e) {
       if (!(e instanceof CartStoreConflictError)) throw e;
       if (confirm("Seu carrinho tem produtos de outra loja. Quer esvaziar e começar nesta?")) {
-        demo.addToCart(p, 1, true);
+        api.addToCart(p, 1, true);
       }
     }
   }
@@ -64,7 +65,9 @@ function StoreDetail() {
         </div>
         <div className="flex flex-wrap gap-2 text-sm">
           <span className={`badge ${delivers ? "bg-primary-soft text-primary-strong" : ""}`}>
-            🚚 {delivers ? `Entrega ${formatBRL(store.deliveryFeeCents)}` : "Não entrega no seu endereço"}
+            🚚 {delivers || (!s.address && store.offersDelivery)
+              ? `Entrega ${formatBRL(store.deliveryFeeCents)}`
+              : store.offersDelivery ? "Não entrega no seu endereço" : "Sem entrega"}
           </span>
           {store.freeDeliveryFromCents !== null && delivers && (
             <span className="badge">Grátis acima de {formatBRL(store.freeDeliveryFromCents)}</span>
@@ -111,13 +114,13 @@ function StoreDetail() {
                 <button className="btn-primary w-full" onClick={() => add(p)}>Adicionar</button>
               ) : (
                 <div className="flex items-center justify-between rounded-full bg-primary-soft p-1">
-                  <button className="btn h-8 w-8 p-0" aria-label="Diminuir" onClick={() => demo.setQuantity(p.id, n - 1)}>−</button>
+                  <button className="btn h-8 w-8 p-0" aria-label="Diminuir" onClick={() => api.setQuantity(p.id, n - 1)}>−</button>
                   <span className="font-semibold">{n}</span>
                   <button
                     className="btn h-8 w-8 p-0"
                     aria-label="Aumentar"
                     disabled={n >= p.stock}
-                    onClick={() => demo.setQuantity(p.id, n + 1)}
+                    onClick={() => api.setQuantity(p.id, n + 1)}
                   >
                     +
                   </button>

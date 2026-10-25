@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { ORDER_STATUS_LABEL, formatBRL, orderFlow, type OrderStatus } from "@mercado/shared";
-import { allStores, demo, useDemo, useHydrated } from "@/lib/demo-store";
+import { api, useApp, useHydrated } from "@/lib/app-store";
 import { Empty, StatusBadge, formatSlot } from "@/components/ui";
+import { run } from "@/components/gate";
 
 export default function OrderPage() {
   return (
@@ -18,9 +19,9 @@ export default function OrderPage() {
 function OrderDetail() {
   const { id } = useParams<{ id: string }>();
   const method = useSearchParams().get("pagar") === "card" ? "card" : "pix";
-  const s = useDemo();
+  const s = useApp();
   const hydrated = useHydrated();
-  if (!hydrated) return null;
+  if (!hydrated || !s.ready) return <p className="text-muted">Carregando…</p>;
 
   const order = s.orders.find((o) => o.id === id);
   if (!order) {
@@ -30,7 +31,7 @@ function OrderDetail() {
       </Empty>
     );
   }
-  const store = allStores(s).find((st) => st.id === order.storeId)!;
+  const store = s.stores.find((st) => st.id === order.storeId)!;
   const flow: OrderStatus[] = orderFlow(order.fulfillment).filter((x) => x !== "awaiting_payment");
   const current = flow.indexOf(order.status);
 
@@ -59,8 +60,18 @@ function OrderDetail() {
           ) : (
             <h2 className="font-semibold">Aguardando aprovação do cartão</h2>
           )}
-          <button className="btn-primary" onClick={() => demo.confirmPayment(order.id)}>
-            Simular pagamento aprovado
+          {s.mode === "demo" ? (
+            <button className="btn-primary" onClick={() => run(() => api.confirmPayment(order.id))}>
+              Simular pagamento aprovado
+            </button>
+          ) : (
+            <p className="text-sm text-muted">Fase de testes: a loja confirma o pagamento pelo painel e esta página atualiza sozinha.</p>
+          )}
+          <button
+            className="block w-full text-sm text-danger"
+            onClick={() => confirm("Cancelar este pedido?") && run(() => api.cancelMyOrder(order.id))}
+          >
+            Cancelar pedido
           </button>
         </section>
       )}
@@ -110,9 +121,9 @@ function OrderDetail() {
           <span>{formatBRL(order.totals.totalCents)}</span>
         </div>
       </section>
-      <p className="text-center text-xs text-muted">
+      {s.mode === "demo" && <p className="text-center text-xs text-muted">
         Dica da demonstração: abra <Link href="/painel" className="underline">Sou lojista</Link> para avançar o status deste pedido.
-      </p>
+      </p>}
     </div>
   );
 }

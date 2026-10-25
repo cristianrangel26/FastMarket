@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Mercado do Futuro",
+  title: "FastMarket",
   description: "Os supermercados da sua região em um só app. Receba em casa ou retire na loja.",
-  appleWebApp: { capable: true, title: "Mercado do Futuro" },
+  appleWebApp: { capable: true, title: "FastMarket" },
 };
 
 export const viewport: Viewport = {

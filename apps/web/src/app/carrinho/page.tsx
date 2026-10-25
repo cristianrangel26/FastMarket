@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { cartSubtotalCents, formatBRL } from "@mercado/shared";
-import { allStores, demo, useDemo, useHydrated } from "@/lib/demo-store";
+import { api, useApp, useHydrated } from "@/lib/app-store";
 import { Empty, Thumb } from "@/components/ui";
 import { products as seedProducts } from "@/lib/demo-data";
 
 export default function CartPage() {
-  const s = useDemo();
+  const s = useApp();
   const hydrated = useHydrated();
-  const store = allStores(s).find((st) => st.id === s.cart.storeId);
+  const store = s.stores.find((st) => st.id === s.cart.storeId);
 
   if (!hydrated) return null;
   if (!store || s.cart.items.length === 0) {
@@ -27,7 +27,7 @@ export default function CartPage() {
     <div className="mx-auto max-w-2xl space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Carrinho</h1>
-        <button className="text-sm text-danger" onClick={() => demo.clearCart()}>Esvaziar</button>
+        <button className="text-sm text-danger" onClick={() => api.clearCart()}>Esvaziar</button>
       </div>
       <Link href={`/loja/${store.slug}`} className="text-sm text-primary-strong">← Continuar comprando em {store.name}</Link>
 
@@ -40,9 +40,9 @@ export default function CartPage() {
               <p className="text-xs text-muted">{formatBRL(i.unitPriceCents)} cada</p>
             </div>
             <div className="flex items-center gap-1">
-              <button className="btn-ghost h-8 w-8 p-0" aria-label="Diminuir" onClick={() => demo.setQuantity(i.productId, i.quantity - 1)}>−</button>
+              <button className="btn-ghost h-8 w-8 p-0" aria-label="Diminuir" onClick={() => api.setQuantity(i.productId, i.quantity - 1)}>−</button>
               <span className="w-6 text-center text-sm font-semibold">{i.quantity}</span>
-              <button className="btn-ghost h-8 w-8 p-0" aria-label="Aumentar" onClick={() => demo.setQuantity(i.productId, i.quantity + 1)}>+</button>
+              <button className="btn-ghost h-8 w-8 p-0" aria-label="Aumentar" onClick={() => api.setQuantity(i.productId, i.quantity + 1)}>+</button>
             </div>
             <p className="w-20 text-right text-sm font-semibold">{formatBRL(i.unitPriceCents * i.quantity)}</p>
           </li>

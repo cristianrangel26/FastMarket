@@ -11,28 +11,36 @@ import {
   formatBRL,
   type Fulfillment,
 } from "@mercado/shared";
-import { allStores, demo, useDemo, useHydrated } from "@/lib/demo-store";
+import { api, useApp, useHydrated } from "@/lib/app-store";
 import { Empty, formatSlot } from "@/components/ui";
 
 type PaymentMethod = "pix" | "card";
 
 export default function CheckoutPage() {
-  const s = useDemo();
+  const s = useApp();
   const hydrated = useHydrated();
   const router = useRouter();
-  const store = allStores(s).find((st) => st.id === s.cart.storeId);
-  const delivers = store ? deliversTo(store, s.address.location) : false;
+  const store = s.stores.find((st) => st.id === s.cart.storeId);
+  const delivers = store && s.address ? deliversTo(store, s.address.location) : false;
 
   const [choice, setChoice] = useState<Fulfillment | null>(null);
   const fulfillment: Fulfillment = choice ?? (delivers ? "delivery" : "pickup");
   const [slotStart, setSlotStart] = useState<string | null>(null);
   const [payment, setPayment] = useState<PaymentMethod>("pix");
   const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- recalcula só quando a loja muda
   const slots = useMemo(() => (store && hydrated ? availableSlots(store, new Date(), 2) : []), [store?.id, hydrated]);
 
-  if (!hydrated) return null;
+  if (!hydrated || !s.ready) return null;
+  if (!s.user) {
+    return (
+      <Empty emoji="🔐" title="Entre na sua conta para finalizar o pedido">
+        <Link href="/entrar?voltar=/checkout" className="btn-primary">Entrar ou criar conta</Link>
+      </Empty>
+    );
+  }
   if (!store || s.cart.items.length === 0) {
     return (
       <Empty emoji="🛒" title="Nada para pagar ainda">
@@ -50,14 +58,17 @@ export default function CheckoutPage() {
     slotStart,
   });
 
-  function submit() {
+  async function submit() {
     const slot = slots.find((x) => x.start === slotStart);
     if (!store || !slot) return;
+    setSending(true);
+    setError(null);
     try {
-      const order = demo.placeOrder(store, fulfillment, slot);
+      const order = await api.placeOrder(store, fulfillment, slot);
       router.push(`/pedidos/${order.id}?pagar=${payment}`);
     } catch (e) {
       setError((e as Error).message);
+      setSending(false);
     }
   }
 
@@ -75,9 +86,13 @@ export default function CheckoutPage() {
               onClick={() => { setChoice("delivery"); setSlotStart(null); }}
               title="🚚 Receber em casa"
               detail={
-                delivers
-                  ? `${s.address.street}, ${s.address.number} · ${s.address.neighborhood}`
-                  : store.offersDelivery ? "Seu endereço está fora da área desta loja" : "Esta loja não faz entregas"
+                !store.offersDelivery
+                  ? "Esta loja não faz entregas"
+                  : !s.address
+                    ? "Cadastre um endereço para receber em casa"
+                    : delivers
+                      ? `${s.address.street}, ${s.address.number} · ${s.address.neighborhood}`
+                      : "Seu endereço está fora da área desta loja"
               }
             />
             <Option
@@ -88,6 +103,11 @@ export default function CheckoutPage() {
               detail={store.offersPickup ? store.address : "Esta loja não oferece retirada"}
             />
           </div>
+          {store.offersDelivery && (
+            <Link href="/enderecos?voltar=/checkout" className="text-sm text-primary-strong underline">
+              {s.address ? "Usar outro endereço" : "Cadastrar endereço"}
+            </Link>
+          )}
         </section>
 
         <section className="card space-y-3 p-4">
@@ -115,7 +135,10 @@ export default function CheckoutPage() {
             <Option active={payment === "pix"} onClick={() => setPayment("pix")} title="⚡ Pix" detail="Aprovação na hora" />
             <Option active={payment === "card"} onClick={() => setPayment("card")} title="💳 Cartão de crédito" detail="Em até 3x sem juros" />
           </div>
-          <p className="text-xs text-muted">Pagamento processado pelo Mercado Pago. Nesta demonstração ele é simulado.</p>
+          <p className="text-xs text-muted">
+            Pagamento processado pelo Mercado Pago.{" "}
+            {s.mode === "demo" ? "Nesta demonstração ele é simulado." : "Enquanto a integração não entra, a loja confirma o pagamento manualmente."}
+          </p>
         </section>
       </div>
 
@@ -146,7 +169,7 @@ export default function CheckoutPage() {
             {problems.map((p) => <li key={p}>{p}</li>)}
           </ul>
         )}
-        <button className="btn-primary w-full py-3" disabled={problems.length > 0} onClick={submit}>
+        <button className="btn-primary w-full py-3" disabled={problems.length > 0 || sending} onClick={submit}>
           {payment === "pix" ? "Pagar com Pix" : "Pagar com cartão"} · {formatBRL(totals.totalCents)}
         </button>
       </aside>

@@ -53,6 +53,8 @@ function StorePanel() {
             </select>
           </label>
         )}
+        <Link href={`/loja/${store.slug}`} className="btn-ghost text-sm">Ver loja</Link>
+        <Link href={`/loja/${store.slug}/3d`} className="btn-ghost text-sm">🕶️ Ver em 3D</Link>
         <Link href="/painel/nova-loja" className="btn-ghost text-sm">+ Nova loja</Link>
       </div>
       {store.status !== "approved" && (

@@ -10,7 +10,7 @@ insert into auth.users (id, raw_user_meta_data) values
 update profiles set role = 'platform_admin' where id = '00000000-0000-0000-0000-000000000001';
 update profiles set role = 'store_owner' where id = '00000000-0000-0000-0000-000000000002';
 
-insert into categories (id, slug, name) values ('10000000-0000-0000-0000-000000000001', 'mercearia', 'Mercearia');
+update categories set id = '10000000-0000-0000-0000-000000000001' where slug = 'mercearia';
 
 -- Dono cadastra a loja: entra pendente e com a comissão padrão, mesmo tentando burlar.
 set role authenticated;
@@ -71,14 +71,15 @@ begin
   end;
 end $$;
 
--- Loja segue o fluxo e cancela, devolvendo o estoque.
-reset role;
-update orders set status = 'received', payment_status = 'approved'; -- o que o webhook de pagamento faz
-set role authenticated;
+-- Loja confirma o pagamento, segue o fluxo e cancela, devolvendo o estoque.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-000000000002';
 do $$
 declare v_id uuid := (select id from orders);
 begin
+  assert (select count(*) from profiles where id = '00000000-0000-0000-0000-000000000003') = 1,
+    'loja deveria ver o cliente do pedido';
+  perform mark_order_paid(v_id);
+  assert (select payment_status from orders) = 'approved', 'pago';
   perform advance_order(v_id, 'picking');
   begin
     perform advance_order(v_id, 'completed');
@@ -88,7 +89,26 @@ begin
   end;
   perform advance_order(v_id, 'cancelled');
   assert (select stock from products) = 3, 'estoque devolvido';
-  assert (select count(*) from order_events where order_id = v_id) = 3, 'histórico';
+  assert (select count(*) from order_events where order_id = v_id) = 4, 'histórico';
+end $$;
+
+-- Cliente cancela pedido ainda não pago e não consegue confirmar o próprio pagamento.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-000000000003';
+do $$
+declare o orders;
+begin
+  o := place_order('20000000-0000-0000-0000-000000000001',
+    '[{"product_id":"30000000-0000-0000-0000-000000000001","quantity":1}]',
+    'pickup', null, now() + interval '2 hours');
+  begin
+    perform mark_order_paid(o.id);
+    assert false, 'cliente não pode confirmar pagamento';
+  exception when raise_exception then
+    assert sqlerrm = 'not_allowed', sqlerrm;
+  end;
+  perform cancel_my_order(o.id);
+  assert (select stock from products) = 3, 'estoque devolvido no cancelamento do cliente';
+  assert (select count(*) from categories) >= 10, 'categorias iniciais';
 end $$;
 
 \echo 'OK: todos os testes de pedidos passaram'

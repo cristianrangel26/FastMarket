@@ -2,8 +2,9 @@
 
 import { useMemo } from "react";
 import { formatBRL, type StoreStatus } from "@mercado/shared";
-import { allStores, demo, useDemo, useHydrated } from "@/lib/demo-store";
+import { api, useApp, useHydrated } from "@/lib/app-store";
 import { Thumb } from "@/components/ui";
+import { Gate, run } from "@/components/gate";
 
 const STATUS_LABEL: Record<StoreStatus, string> = {
   pending: "Aguardando aprovação",
@@ -12,9 +13,17 @@ const STATUS_LABEL: Record<StoreStatus, string> = {
 };
 
 export default function AdminPage() {
-  const s = useDemo();
+  return (
+    <Gate back="/admin" role="platform_admin">
+      <Admin />
+    </Gate>
+  );
+}
+
+function Admin() {
+  const s = useApp();
   const hydrated = useHydrated();
-  const stores = useMemo(() => allStores(s), [s]);
+  const stores = useMemo(() => s.stores, [s]);
   const paid = hydrated ? s.orders.filter((o) => o.paymentStatus === "approved") : [];
 
   const tiles = [
@@ -31,12 +40,12 @@ export default function AdminPage() {
           <p className="text-sm text-muted">Administração da plataforma</p>
           <h1 className="text-2xl font-bold">Visão geral</h1>
         </div>
-        <button
+        {s.mode === "demo" && <button
           className="btn-ghost text-sm"
-          onClick={() => confirm("Apagar pedidos, carrinho e alterações da demonstração?") && demo.reset()}
+          onClick={() => confirm("Apagar pedidos, carrinho e alterações da demonstração?") && api.reset()}
         >
           Reiniciar demonstração
-        </button>
+        </button>}
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -76,7 +85,7 @@ export default function AdminPage() {
                     <select
                       className="input w-auto"
                       value={st.status}
-                      onChange={(e) => demo.patchStore(st.id, { status: e.target.value as StoreStatus })}
+                      onChange={(e) => run(() => api.patchStore(st.id, { status: e.target.value as StoreStatus }))}
                     >
                       {(Object.keys(STATUS_LABEL) as StoreStatus[]).map((k) => (
                         <option key={k} value={k}>{STATUS_LABEL[k]}</option>
@@ -92,7 +101,7 @@ export default function AdminPage() {
                       step={0.5}
                       value={st.commissionBps / 100}
                       onChange={(e) =>
-                        demo.patchStore(st.id, { commissionBps: Math.min(10000, Math.max(0, Math.round(Number(e.target.value) * 100))) })
+                        run(() => api.patchStore(st.id, { commissionBps: Math.min(10000, Math.max(0, Math.round(Number(e.target.value) * 100))) }))
                       }
                     />
                   </td>

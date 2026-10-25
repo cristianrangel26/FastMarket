@@ -3,30 +3,30 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { deliversTo, distanceKm, formatBRL } from "@mercado/shared";
-import { allStores, categories, useDemo } from "@/lib/demo-store";
+import { useApp } from "@/lib/app-store";
 import { Thumb } from "@/components/ui";
 
 type Filter = "todas" | "entrega" | "retirada";
 
 export default function Home() {
-  const s = useDemo();
+  const s = useApp();
   const [filter, setFilter] = useState<Filter>("todas");
   const [query, setQuery] = useState("");
 
   const stores = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return allStores(s)
+    return s.stores
       .filter((st) => st.status === "approved")
       .map((st) => ({
         store: st,
-        km: distanceKm(st.location, s.address.location),
-        delivers: deliversTo(st, s.address.location),
+        km: s.address ? distanceKm(st.location, s.address.location) : null,
+        delivers: s.address ? deliversTo(st, s.address.location) : false,
       }))
       .filter(({ store, delivers }) =>
         filter === "entrega" ? delivers : filter === "retirada" ? store.offersPickup : true,
       )
       .filter(({ store }) => !q || store.name.toLowerCase().includes(q) || store.description.toLowerCase().includes(q))
-      .sort((a, b) => a.km - b.km);
+      .sort((a, b) => (a.km ?? 0) - (b.km ?? 0) || a.store.name.localeCompare(b.store.name));
   }, [s, filter, query]);
 
   return (
@@ -40,7 +40,7 @@ export default function Home() {
           Escolha a loja, monte o carrinho e decida: receber em casa no horário que quiser ou retirar pronto na loja.
         </p>
         <div className="mt-6 flex flex-wrap gap-2">
-          {categories.map((c) => (
+          {s.categories.map((c) => (
             <span key={c.id} className="badge bg-surface text-foreground">
               {c.emoji} {c.name}
             </span>
@@ -50,7 +50,9 @@ export default function Home() {
 
       <section className="space-y-4">
         <div className="flex flex-wrap items-center gap-3">
-          <h2 className="mr-auto text-xl font-bold">Lojas perto de {s.address.neighborhood}</h2>
+          <h2 className="mr-auto text-xl font-bold">
+            {s.address ? `Lojas perto de ${s.address.neighborhood}` : "Lojas"}
+          </h2>
           <input
             className="input sm:w-64"
             placeholder="Buscar loja"
@@ -70,7 +72,8 @@ export default function Home() {
           </div>
         </div>
 
-        {stores.length === 0 && <p className="text-muted">Nenhuma loja encontrada com esses filtros.</p>}
+        {!s.ready && <p className="text-muted">Carregando lojas…</p>}
+        {s.ready && stores.length === 0 && <p className="text-muted">Nenhuma loja encontrada com esses filtros.</p>}
 
         <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {stores.map(({ store, km, delivers }) => (
@@ -81,7 +84,7 @@ export default function Home() {
                   <h3 className="truncate font-semibold">{store.name}</h3>
                   <p className="line-clamp-2 text-sm text-muted">{store.description}</p>
                   <p className="text-xs text-muted">
-                    {km.toFixed(1).replace(".", ",")} km · mínimo {formatBRL(store.minOrderCents)}
+                    {km !== null && `${km.toFixed(1).replace(".", ",")} km · `}mínimo {formatBRL(store.minOrderCents)}
                   </p>
                   <div className="flex flex-wrap gap-1 pt-1">
                     {delivers ? (
@@ -89,7 +92,9 @@ export default function Home() {
                         🚚 {store.deliveryFeeCents === 0 ? "Entrega grátis" : `Entrega ${formatBRL(store.deliveryFeeCents)}`}
                       </span>
                     ) : (
-                      <span className="badge">{store.offersDelivery ? "Fora da área de entrega" : "Sem entrega"}</span>
+                      <span className="badge">
+                        {!store.offersDelivery ? "Sem entrega" : s.address ? "Fora da área de entrega" : "🚚 Entrega"}
+                      </span>
                     )}
                     {store.offersPickup && <span className="badge">🏬 Retirada</span>}
                   </div>

@@ -30,6 +30,8 @@ export interface OpeningHours {
 
 export interface Store {
   id: string;
+  /** Dono da loja (só vem do banco; ausente na demonstração). */
+  ownerId?: string;
   slug: string;
   name: string;
   description: string;
@@ -94,6 +96,8 @@ export interface TimeSlot {
 }
 
 export interface Address {
+  /** Id no banco, quando o endereço foi salvo. */
+  id?: string;
   label: string;
   street: string;
   number: string;

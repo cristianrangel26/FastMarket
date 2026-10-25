@@ -3,11 +3,14 @@
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Environment, Lightformer } from "@react-three/drei";
 import { XR, XROrigin, useXR, useXRControllerLocomotion, type XRStore } from "@react-three/xr";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { formatBRL, type Product, type Store } from "@mercado/shared";
-import { GONDOLA, SHELF_HEIGHTS, SLOT_WIDTH, collide, type StoreLayout } from "@/lib/store-layout";
-import { brandColor, floorTexture, packTexture, priceTagTexture, signTexture } from "./textures";
+import { GONDOLA, SHELF_HEIGHTS, SLOT_WIDTH, TABLE, collide, type Slot, type StoreLayout } from "@/lib/store-layout";
+import { packageParts } from "./packaging";
+import { ProduceSection } from "./produce";
+import { brandColor, ceilingTexture, floorTexture, priceTagTexture, shadowTexture, signTexture } from "./textures";
+import type { Navigator } from "./navigator";
 
 /** Direção pedida pelo joystick, de -1 a 1. Mutável de propósito: é lida a cada quadro. */
 export class MoveInput {
@@ -19,11 +22,17 @@ export class MoveInput {
   }
 }
 
+/**
+ * Deslocamento automático da navegação fácil: segue um caminho e termina
+ * olhando para a seção. Qualquer comando manual cancela.
+ */
+
 interface SceneProps {
   store: Store;
   layout: StoreLayout;
   products: Map<string, Product>;
   move: MoveInput;
+  nav: Navigator;
   onPick: (product: Product) => void;
   onCheckout: () => void;
   xr: XRStore;
@@ -59,8 +68,20 @@ export function StoreScene(props: SceneProps) {
       {props.layout.gondolas.map((g) => (
         <GondolaMesh key={g.category.id} gondola={g} products={props.products} onPick={props.onPick} />
       ))}
+      {props.layout.produce && (
+        <>
+          <ProduceSection tables={props.layout.produce.tables} products={props.products} onPick={props.onPick} />
+          <Sign
+            map={signTexture(props.layout.produce.category.emoji, props.layout.produce.category.name, "#2e7d32")}
+            position={[0, 2.85, props.layout.produce.tables[0].z]}
+            rotationY={0}
+            size={[2.2, 0.69]}
+          />
+        </>
+      )}
+      <ContactShadows layout={props.layout} />
       <Checkout layout={props.layout} onCheckout={props.onCheckout} />
-      <PlayerControls layout={props.layout} move={props.move} />
+      <PlayerControls layout={props.layout} move={props.move} nav={props.nav} />
       <VRPlayer layout={props.layout} />
       {props.picked && (
         <VRProductPanel
@@ -112,6 +133,12 @@ function Room({ store, layout }: { store: Store; layout: StoreLayout }) {
     t.needsUpdate = true;
     return t;
   }, [w, d]);
+  const ceiling = useMemo(() => {
+    const t = ceilingTexture().clone();
+    t.repeat.set(w / 1.25, d / 1.25);
+    t.needsUpdate = true;
+    return t;
+  }, [w, d]);
   const banner = useMemo(() => signTexture(store.logoUrl && store.logoUrl.length <= 4 ? store.logoUrl : "🛒", store.name), [store]);
 
   return (
@@ -122,7 +149,7 @@ function Room({ store, layout }: { store: Store; layout: StoreLayout }) {
       </mesh>
       <mesh rotation={[Math.PI / 2, 0, 0]} position={[cx, CEILING, cz]}>
         <planeGeometry args={[w, d]} />
-        <meshBasicMaterial color="#e9e7e2" />
+        <meshBasicMaterial map={ceiling} color="#e9e7e2" />
       </mesh>
       {/* Paredes */}
       <Wall position={[cx, CEILING / 2, minZ]} size={[w, CEILING]} rotationY={0} color="#f6f3ea" />
@@ -151,20 +178,71 @@ function Wall({ position, size, rotationY, color }: { position: [number, number,
   );
 }
 
-const boxGeo = new THREE.BoxGeometry(0.22, 0.3, 0.16);
-const bottleGeo = new THREE.CylinderGeometry(0.075, 0.085, 0.32, 20);
-const bagGeo = new THREE.BoxGeometry(0.26, 0.24, 0.12);
 const tagGeo = new THREE.PlaneGeometry(0.26, 0.1);
 
-function geometryFor(p: Product): THREE.BufferGeometry {
-  if (p.unit === "l" || p.unit === "ml") return bottleGeo;
-  if (p.unit === "kg" || p.unit === "g") return bagGeo;
-  return boxGeo;
+/** Todas as unidades de um produto numa gôndola, desenhadas de uma vez (instancing). */
+function ProductInstances({ product, slots, onPick }: { product: Product; slots: Slot[]; onPick: (e: ThreeEvent<MouseEvent>) => void }) {
+  const parts = useMemo(() => packageParts(product), [product]);
+  const matrices = useMemo(() => {
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const one = new THREE.Vector3(1, 1, 1);
+    return slots.map((s) => {
+      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (s.facing * Math.PI) / 2);
+      return m.compose(new THREE.Vector3(s.x, s.y + 0.002, s.z), q, one).clone();
+    });
+  }, [slots]);
+  return (
+    <>
+      {parts.map((part, i) => (
+        <InstancedPart key={i} geometry={part.geometry} material={part.material} matrices={matrices} onPick={onPick} />
+      ))}
+    </>
+  );
 }
 
-function heightOf(geo: THREE.BufferGeometry): number {
-  geo.computeBoundingBox();
-  return geo.boundingBox!.max.y - geo.boundingBox!.min.y;
+function InstancedPart({ geometry, material, matrices, onPick }: {
+  geometry: THREE.BufferGeometry;
+  material: THREE.Material | THREE.Material[];
+  matrices: THREE.Matrix4[];
+  onPick: (e: ThreeEvent<MouseEvent>) => void;
+}) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [matrices]);
+  return (
+    <instancedMesh
+      ref={ref}
+      args={[geometry, material, matrices.length]}
+      onClick={onPick}
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = "pointer"; }}
+      onPointerOut={() => { document.body.style.cursor = ""; }}
+    />
+  );
+}
+
+/** Sombras de contato falsas sob gôndolas e bancas, para tudo "pisar" no chão. */
+function ContactShadows({ layout }: { layout: StoreLayout }) {
+  const tex = useMemo(() => shadowTexture(), []);
+  const items = [
+    ...layout.gondolas.map((g) => ({ x: g.x, z: 0, w: GONDOLA.depth + 0.9, d: GONDOLA.length + 0.9 })),
+    ...(layout.produce?.tables ?? []).map((t) => ({ x: t.x, z: t.z, w: TABLE.width + 0.7, d: TABLE.depth + 0.7 })),
+  ];
+  return (
+    <>
+      {items.map((it, i) => (
+        <mesh key={i} position={[it.x, 0.004, it.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[it.w, it.d]} />
+          <meshBasicMaterial map={tex} transparent depthWrite={false} />
+        </mesh>
+      ))}
+    </>
+  );
 }
 
 const GondolaMesh = memo(function GondolaMesh({
@@ -179,20 +257,11 @@ const GondolaMesh = memo(function GondolaMesh({
   const accent = brandColor(gondola.category.name);
   const sign = useMemo(() => signTexture(gondola.category.emoji, gondola.category.name, accent), [gondola.category, accent]);
 
-  // Materiais por produto (frente com a embalagem, laterais na cor da marca).
-  const materials = useMemo(() => {
-    const m = new Map<string, THREE.Material | THREE.Material[]>();
-    for (const id of new Set(gondola.slots.map((s) => s.productId))) {
-      const p = products.get(id);
-      if (!p) continue;
-      const front = new THREE.MeshStandardMaterial({ map: packTexture(p), roughness: 0.45 });
-      const side = new THREE.MeshStandardMaterial({ color: brandColor(p.name), roughness: 0.5 });
-      if (p.unit === "l" || p.unit === "ml") m.set(id, [front, side, side]);
-      // Ordem das faces do BoxGeometry: +x, -x, +y, -y, +z (frente), -z
-      else m.set(id, [side, side, side, side, front, side]);
-    }
+  const byProduct = useMemo(() => {
+    const m = new Map<string, Slot[]>();
+    for (const sl of gondola.slots) m.set(sl.productId, [...(m.get(sl.productId) ?? []), sl]);
     return m;
-  }, [gondola.slots, products]);
+  }, [gondola.slots]);
 
   // Etiqueta de preço só na primeira frente de cada produto em cada prateleira.
   const tags = useMemo(() => {
@@ -238,23 +307,17 @@ const GondolaMesh = memo(function GondolaMesh({
       <Sign map={sign} position={[gondola.x, 2.75, 0]} rotationY={Math.PI / 2} size={[1.8, 0.56]} />
 
       {/* Produtos */}
-      {gondola.slots.map((s, i) => {
-        const p = products.get(s.productId);
-        if (!p) return null;
-        const geo = geometryFor(p);
-        return (
-          <mesh
-            key={i}
-            geometry={geo}
-            material={materials.get(p.id)}
-            position={[s.x, s.y + heightOf(geo) / 2 + 0.002, s.z]}
-            rotation={[0, (s.facing * Math.PI) / 2, 0]}
-            onClick={(e) => pick(e, p.id)}
-            onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = "pointer"; }}
-            onPointerOut={() => { document.body.style.cursor = ""; }}
-          />
-        );
+      {[...byProduct].map(([id, slots]) => {
+        const p = products.get(id);
+        return p ? <ProductInstances key={id} product={p} slots={slots} onPick={(e) => pick(e, id)} /> : null;
       })}
+      {/* Fundo perfurado da gôndola */}
+      {[1, -1].map((f) => (
+        <mesh key={f} position={[gondola.x + f * 0.035, GONDOLA.height / 2 + 0.05, 0]} rotation={[0, (f * Math.PI) / 2, 0]}>
+          <planeGeometry args={[GONDOLA.length, GONDOLA.height - 0.1]} />
+          <meshStandardMaterial color="#e4e7ea" roughness={0.7} />
+        </mesh>
+      ))}
       {tags.map((s, i) => {
         const p = products.get(s.productId)!;
         return (
@@ -320,7 +383,7 @@ function Checkout({ layout, onCheckout }: { layout: StoreLayout; onCheckout: () 
  * Câmera em primeira pessoa: arrastar para olhar (mouse ou dedo), WASD/setas
  * ou joystick para andar. Colisão com gôndolas e paredes.
  */
-function PlayerControls({ layout, move }: { layout: StoreLayout; move: MoveInput }) {
+function PlayerControls({ layout, move, nav }: { layout: StoreLayout; move: MoveInput; nav: Navigator }) {
   const { camera, gl } = useThree();
   const look = useRef({ yaw: 0, pitch: -0.05 });
   const keys = useRef(new Set<string>());
@@ -329,9 +392,11 @@ function PlayerControls({ layout, move }: { layout: StoreLayout; move: MoveInput
     const el = gl.domElement;
     const drag = { id: -1, x: 0, y: 0 };
     const down = (e: PointerEvent) => Object.assign(drag, { id: e.pointerId, x: e.clientX, y: e.clientY });
+    const dragged = () => nav.cancel();
     const moveFn = (e: PointerEvent) => {
       if (drag.id !== e.pointerId) return;
       const sensitivity = e.pointerType === "touch" ? 0.006 : 0.004;
+      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 2) dragged();
       look.current.yaw -= (e.clientX - drag.x) * sensitivity;
       look.current.pitch = THREE.MathUtils.clamp(look.current.pitch - (e.clientY - drag.y) * sensitivity, -1.1, 0.9);
       Object.assign(drag, { x: e.clientX, y: e.clientY });
@@ -355,7 +420,7 @@ function PlayerControls({ layout, move }: { layout: StoreLayout; move: MoveInput
       window.removeEventListener("keydown", kd);
       window.removeEventListener("keyup", ku);
     };
-  }, [gl]);
+  }, [gl, nav]);
 
   const inXR = useXR((x) => x.session != null);
 
@@ -364,15 +429,23 @@ function PlayerControls({ layout, move }: { layout: StoreLayout; move: MoveInput
     const k = keys.current;
     const forward = (k.has("w") || k.has("arrowup") ? 1 : 0) - (k.has("s") || k.has("arrowdown") ? 1 : 0) + move.forward;
     const strafe = (k.has("d") || k.has("arrowright") ? 1 : 0) - (k.has("a") || k.has("arrowleft") ? 1 : 0) + move.strafe;
-    const { yaw, pitch } = look.current;
-    const step = Math.min(dt, 0.05) * SPEED;
+    const t = Math.min(dt, 0.05);
+    if (forward || strafe) nav.cancel();
+
+    // Navegação fácil: segue o caminho, depois vira para a seção.
+    const lk = look.current;
+    const start = nav.step({ x: camera.position.x, z: camera.position.z }, lk, t);
+
+    const { yaw, pitch } = lk;
+    const step = t * SPEED;
     const sin = Math.sin(yaw);
     const cos = Math.cos(yaw);
-    const nx = camera.position.x + (-sin * forward + cos * strafe) * step;
-    const nz = camera.position.z + (-cos * forward - sin * strafe) * step;
+    const nx = start.x + (-sin * forward + cos * strafe) * step;
+    const nz = start.z + (-cos * forward - sin * strafe) * step;
     const p = collide(layout, nx, nz);
     camera.position.set(p.x, EYE_HEIGHT, p.z);
     camera.rotation.set(pitch, yaw, 0, "YXZ");
+    nav.track(p, yaw);
   });
 
   return null;

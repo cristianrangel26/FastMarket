@@ -92,13 +92,16 @@ export function packTexture(p: Product): THREE.Texture {
   const tex = toTexture(key, c);
 
   if (isUrl(p.imageUrl)) {
+    // Foto real da embalagem: ocupa a frente inteira, sobre fundo branco.
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-      const scale = Math.min(210 / img.width, 160 / img.height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, 256, 320);
+      const scale = Math.min(256 / img.width, 320 / img.height);
       const w = img.width * scale;
       const h = img.height * scale;
-      ctx.drawImage(img, 128 - w / 2, 125 - h / 2, w, h);
+      ctx.drawImage(img, 128 - w / 2, 160 - h / 2, w, h);
       tex.needsUpdate = true;
     };
     img.src = p.imageUrl;
@@ -158,4 +161,84 @@ export function floorTexture(): THREE.Texture {
   const t = toTexture(key, c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
+}
+
+export function woodTexture(): THREE.Texture {
+  const key = "wood";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(256, 256);
+  ctx.fillStyle = "#b8895a";
+  ctx.fillRect(0, 0, 256, 256);
+  // Tábuas com veios
+  for (let plank = 0; plank < 4; plank++) {
+    const y = plank * 64;
+    ctx.fillStyle = plank % 2 ? "#ad7f50" : "#c09264";
+    ctx.fillRect(0, y, 256, 62);
+    ctx.strokeStyle = "rgba(90,55,25,0.25)";
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 9; i++) {
+      ctx.beginPath();
+      const yy = y + 6 + i * 6 + Math.sin(i * 3 + plank) * 2;
+      ctx.moveTo(0, yy);
+      for (let x = 0; x <= 256; x += 16) ctx.lineTo(x, yy + Math.sin(x / 30 + i + plank * 2) * 2.5);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(60,35,15,0.45)";
+    ctx.fillRect(0, y + 62, 256, 2);
+  }
+  const t = toTexture(key, c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/** Plaquinha de lousa com giz, como as do hortifrúti. */
+export function chalkTagTexture(name: string, price: string): THREE.Texture {
+  const key = `chalk:${name}:${price}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(320, 160);
+  ctx.fillStyle = "#8a5a2b";
+  ctx.fillRect(0, 0, 320, 160);
+  ctx.fillStyle = "#26302b";
+  ctx.fillRect(10, 10, 300, 140);
+  ctx.fillStyle = "#f4f1e8";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "italic 28px 'Comic Sans MS', 'Segoe Print', cursive, sans-serif";
+  ctx.fillText(wrapText(ctx, name, 280, 1)[0], 160, 52);
+  ctx.font = "bold 42px 'Comic Sans MS', 'Segoe Print', cursive, sans-serif";
+  ctx.fillStyle = "#ffe36b";
+  ctx.fillText(price, 160, 108, 290);
+  return toTexture(key, c);
+}
+
+/** Forro de teto em placas. */
+export function ceilingTexture(): THREE.Texture {
+  const key = "ceiling";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(128, 128);
+  ctx.fillStyle = "#f1f0ec";
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.strokeStyle = "#cfcac0";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(0, 0, 128, 128);
+  const t = toTexture(key, c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/** Mancha escura e suave para fingir a sombra de contato sob os móveis. */
+export function shadowTexture(): THREE.Texture {
+  const key = "shadow";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(128, 128);
+  const g = ctx.createRadialGradient(64, 64, 10, 64, 64, 64);
+  g.addColorStop(0, "rgba(0,0,0,0.45)");
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  return toTexture(key, c);
 }

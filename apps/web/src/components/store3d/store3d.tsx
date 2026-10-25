@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import { CartStoreConflictError, cartItemCount, cartSubtotalCents, formatBRL, type Product, type Store } from "@mercado/shared";
 import { api, useApp } from "@/lib/app-store";
-import { buildLayout } from "@/lib/store-layout";
+import { buildLayout, findPath, type Stop } from "@/lib/store-layout";
 import { Thumb } from "@/components/ui";
 import { createXRStore, useXRSessionModeSupported } from "@react-three/xr";
+import { Navigator } from "./navigator";
 import { MoveInput, StoreScene } from "./scene";
 
 export default function Store3D({ store }: { store: Store }) {
@@ -16,6 +17,9 @@ export default function Store3D({ store }: { store: Store }) {
   const [move] = useState(() => new MoveInput());
   const [picked, setPicked] = useState<Product | null>(null);
   const [help, setHelp] = useState(true);
+  const [nav] = useState(() => new Navigator());
+  const [stopIndex, setStopIndex] = useState(0);
+  const [freeWalk, setFreeWalk] = useState(false);
   const [xr] = useState(() => createXRStore({ emulate: false, hand: { teleportPointer: false }, controller: { teleportPointer: false } }));
   const vrSupported = useXRSessionModeSupported("immersive-vr");
 
@@ -26,6 +30,17 @@ export default function Store3D({ store }: { store: Store }) {
   const layout = useMemo(() => buildLayout(s.categories, storeProducts), [s.categories, assortmentKey]);
   const byId = useMemo(() => new Map(storeProducts.map((p) => [p.id, p])), [storeProducts]);
   const inCart = s.cart.storeId === store.id;
+
+  /** Leva a pessoa sozinha até a seção, já de frente para as prateleiras. */
+  function goTo(index: number) {
+    const stops = layout.stops;
+    const i = (index + stops.length) % stops.length;
+    const stop = stops[i];
+    nav.go(findPath(layout, nav.position, stop), stop.yaw);
+    setStopIndex(i);
+    setHelp(false);
+    setPicked(null);
+  }
 
   if (layout.gondolas.length === 0) {
     return (
@@ -43,6 +58,7 @@ export default function Store3D({ store }: { store: Store }) {
         layout={layout}
         products={byId}
         move={move}
+        nav={nav}
         onPick={(p) => { setPicked(p); setHelp(false); }}
         onCheckout={() => {
           void xr.getState().session?.end();
@@ -57,8 +73,8 @@ export default function Store3D({ store }: { store: Store }) {
 
       {/* Topo */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
-        <Link href={`/loja/${store.slug}`} className="btn-ghost pointer-events-auto shadow-sm">← Ver como lista</Link>
-        <Link href="/carrinho" className="btn-primary pointer-events-auto shadow-md">
+        <Link href={`/loja/${store.slug}`} className="btn-ghost pointer-events-auto px-4 py-3 text-lg shadow-sm">← Ver como lista</Link>
+        <Link href="/carrinho" className="btn-primary pointer-events-auto px-4 py-3 text-lg shadow-md">
           🛒 {inCart ? cartItemCount(s.cart) : 0} · {formatBRL(inCart ? cartSubtotalCents(s.cart) : 0)}
         </Link>
       </div>
@@ -66,18 +82,30 @@ export default function Store3D({ store }: { store: Store }) {
       {help && (
         <button
           onClick={() => setHelp(false)}
-          className="absolute left-1/2 top-16 w-[min(92vw,420px)] -translate-x-1/2 rounded-2xl bg-black/70 p-4 text-left text-sm text-white backdrop-blur"
+          className="absolute left-1/2 top-20 z-10 w-[min(92vw,460px)] -translate-x-1/2 rounded-2xl bg-black/75 p-5 text-left text-lg leading-snug text-white backdrop-blur"
         >
-          <p className="mb-1 font-semibold">Bem-vindo ao {store.name}!</p>
-          <p>Arraste a tela para olhar em volta. Ande com o joystick ou com W A S D. Toque num produto para ver o preço e colocar no carrinho. Quando terminar, vá até o <b>Caixa</b>.</p>
-          <p className="mt-2 text-xs text-white/70">Toque para fechar</p>
+          <p className="mb-2 text-xl font-semibold">Bem-vindo ao {store.name}!</p>
+          <p>Toque no nome de uma seção lá embaixo e você será levado até ela. Toque num produto para ver o preço e colocar no carrinho.</p>
+          <p className="mt-2">Quando terminar, toque em <b>💳 Caixa</b>.</p>
+          <p className="mt-3 text-base text-white/70">Toque aqui para fechar</p>
         </button>
       )}
 
-      <Joystick move={move} />
+      {freeWalk && !picked && <Joystick move={move} />}
+
+      {!picked && (
+        <EasyNav
+          stops={layout.stops}
+          current={stopIndex}
+          freeWalk={freeWalk}
+          onGo={goTo}
+          onTurn={(d) => nav.turn(d)}
+          onToggleFree={() => setFreeWalk((v) => !v)}
+        />
+      )}
 
       {vrSupported && (
-        <button className="btn-primary absolute bottom-6 right-6 py-3 shadow-lg" onClick={() => void xr.enterVR()}>
+        <button className="btn-primary absolute right-3 top-20 py-3 text-lg shadow-lg" onClick={() => void xr.enterVR()}>
           🥽 Entrar em VR
         </button>
       )}
@@ -113,24 +141,76 @@ function ProductSheet({ product, quantity, onClose }: { product: Product; quanti
         <div className="flex gap-3">
           <Thumb src={product.imageUrl} alt={product.name} size="lg" />
           <div className="min-w-0 flex-1">
-            <h2 className="font-semibold leading-snug">{product.name}</h2>
-            {product.description && <p className="text-sm text-muted">{product.description}</p>}
-            <p className="mt-1 text-xl font-bold">{formatBRL(product.priceCents)}</p>
-            <p className="text-xs text-muted">{product.stock} em estoque</p>
+            <h2 className="text-xl font-semibold leading-snug">{product.name}</h2>
+            {product.description && <p className="text-base text-muted">{product.description}</p>}
+            <p className="mt-1 text-2xl font-bold">{formatBRL(product.priceCents)}</p>
+            <p className="text-sm text-muted">{product.stock} em estoque</p>
           </div>
-          <button className="self-start text-muted" onClick={onClose} aria-label="Fechar">✕</button>
+          <button className="-m-2 self-start p-2 text-2xl text-muted" onClick={onClose} aria-label="Fechar">✕</button>
         </div>
         {quantity === 0 ? (
-          <button className="btn-primary w-full py-2.5" onClick={add}>Colocar no carrinho</button>
+          <button className="btn-primary w-full py-4 text-lg" onClick={add}>🛒 Colocar no carrinho</button>
         ) : (
           <div className="flex items-center justify-between rounded-full bg-primary-soft p-1">
-            <button className="btn h-9 w-9 p-0" aria-label="Diminuir" onClick={() => api.setQuantity(product.id, quantity - 1)}>−</button>
-            <span className="font-semibold">{quantity} no carrinho</span>
-            <button className="btn h-9 w-9 p-0" aria-label="Aumentar" disabled={quantity >= product.stock} onClick={() => api.setQuantity(product.id, quantity + 1)}>+</button>
+            <button className="btn h-14 w-14 p-0 text-2xl" aria-label="Diminuir" onClick={() => api.setQuantity(product.id, quantity - 1)}>−</button>
+            <span className="text-lg font-semibold">{quantity} no carrinho</span>
+            <button className="btn h-14 w-14 p-0 text-2xl" aria-label="Aumentar" disabled={quantity >= product.stock} onClick={() => api.setQuantity(product.id, quantity + 1)}>+</button>
           </div>
         )}
+        <button className="btn-ghost w-full py-3 text-lg" onClick={onClose}>Continuar comprando</button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Navegação simples (padrão): botões grandes com o nome de cada seção, que levam
+ * a pessoa sozinha até lá, e setas de virar e de próxima seção. Pensado para
+ * quem não tem prática com jogos.
+ */
+function EasyNav({
+  stops,
+  current,
+  freeWalk,
+  onGo,
+  onTurn,
+  onToggleFree,
+}: {
+  stops: Stop[];
+  current: number;
+  freeWalk: boolean;
+  onGo: (index: number) => void;
+  onTurn: (delta: number) => void;
+  onToggleFree: () => void;
+}) {
+  const big = "flex min-h-14 items-center justify-center gap-1 rounded-2xl bg-white/95 px-3 text-lg font-semibold shadow-md active:scale-95";
+  return (
+    <nav className="absolute inset-x-0 bottom-0 space-y-2 bg-gradient-to-t from-black/45 to-transparent p-3 pt-8" aria-label="Ir para uma seção">
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {stops.map((s, i) => (
+          <button
+            key={s.id}
+            onClick={() => onGo(i)}
+            aria-current={i === current ? "location" : undefined}
+            className={`flex min-h-16 shrink-0 flex-col items-center justify-center rounded-2xl px-4 text-base font-semibold shadow-md active:scale-95 ${
+              i === current ? "bg-primary text-white" : "bg-white/95"
+            }`}
+          >
+            <span className="text-2xl leading-none">{s.emoji}</span>
+            <span>{s.label}</span>
+          </button>
+        ))}
+      </div>
+      <div className={`grid gap-2 ${freeWalk ? "grid-cols-3" : "grid-cols-5"}`}>
+        {!freeWalk && <button className={big} onClick={() => onGo(current - 1)} aria-label="Seção anterior">◀ <span className="hidden sm:inline">Anterior</span></button>}
+        <button className={big} onClick={() => onTurn(Math.PI / 4)} aria-label="Virar para a esquerda">↺ <span className="hidden sm:inline">Virar</span></button>
+        <button className={`${big} text-base`} onClick={onToggleFree} aria-pressed={freeWalk}>
+          {freeWalk ? "✋ Botões" : "🕹️ Andar livre"}
+        </button>
+        <button className={big} onClick={() => onTurn(-Math.PI / 4)} aria-label="Virar para a direita"><span className="hidden sm:inline">Virar</span> ↻</button>
+        {!freeWalk && <button className={big} onClick={() => onGo(current + 1)} aria-label="Próxima seção"><span className="hidden sm:inline">Próximo</span> ▶</button>}
+      </div>
+    </nav>
   );
 }
 
@@ -157,7 +237,7 @@ function Joystick({ move }: { move: MoveInput }) {
 
   return (
     <div
-      className="absolute bottom-6 left-6 h-32 w-32 touch-none rounded-full border-2 border-white/70 bg-black/20 backdrop-blur-sm"
+      className="absolute bottom-48 left-3 z-[1] h-32 w-32 touch-none rounded-full border-2 border-white/70 bg-black/20 backdrop-blur-sm"
       onPointerDown={(e) => {
         const r = e.currentTarget.getBoundingClientRect();
         origin.current = { x: r.left + r.width / 2, y: r.top + r.height / 2, id: e.pointerId };

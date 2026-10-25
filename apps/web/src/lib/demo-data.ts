@@ -120,6 +120,51 @@ const catalog: Record<string, Row[]> = {
   ],
 };
 
+/**
+ * Catálogo de exemplo que o lojista pode copiar para a própria loja com um
+ * clique. `search` é o termo usado para achar a foto da embalagem; frutas e
+ * verduras não têm, porque aparecem em 3D nos cestos.
+ */
+export interface SampleProduct {
+  name: string;
+  emoji: string;
+  categorySlug: string;
+  priceCents: number;
+  unit: Unit;
+  description: string;
+  search?: string;
+}
+
+export const sampleCatalog: SampleProduct[] = [
+  ...catalog["st-verde"].slice(0, 5),
+  ...catalog["st-nova"].filter(([, , c]) => c === "hortifruti"),
+].map(([name, emoji, categorySlug, priceCents, unit, description]) => ({ name, emoji, categorySlug, priceCents, unit, description: description ?? "" }))
+  .concat(
+    ([
+      ["Arroz branco tipo 1", "🍚", "mercearia", 2690, "pct", "5 kg", "arroz tipo 1 5kg"],
+      ["Feijão carioca", "🫘", "mercearia", 899, "pct", "1 kg", "feijão carioca"],
+      ["Macarrão espaguete", "🍝", "mercearia", 549, "pct", "500 g", "macarrão espaguete"],
+      ["Café torrado e moído", "☕", "mercearia", 1890, "pct", "500 g", "café torrado e moído"],
+      ["Açúcar refinado", "🍬", "mercearia", 499, "pct", "1 kg", "açúcar refinado"],
+      ["Azeite extravirgem", "🫒", "mercearia", 3990, "un", "500 ml", "azeite extra virgem"],
+      ["Óleo de soja", "🫗", "mercearia", 799, "un", "900 ml", "óleo de soja"],
+      ["Biscoito recheado", "🍪", "mercearia", 349, "pct", "130 g", "biscoito recheado"],
+      ["Leite integral", "🥛", "laticinios", 549, "l", "1 l", "leite integral"],
+      ["Manteiga", "🧈", "laticinios", 1390, "un", "200 g", "manteiga"],
+      ["Iogurte natural", "🥛", "laticinios", 1150, "un", "500 g", "iogurte natural"],
+      ["Pão de forma", "🍞", "padaria", 899, "pct", "500 g", "pão de forma"],
+      ["Refrigerante cola", "🥤", "bebidas", 999, "un", "2 l", "coca-cola 2l"],
+      ["Refrigerante guaraná", "🥤", "bebidas", 849, "un", "2 l", "guaraná antarctica"],
+      ["Água mineral", "💧", "bebidas", 299, "un", "1,5 l", "água mineral"],
+      ["Suco de uva integral", "🧃", "bebidas", 1590, "un", "1 l", "suco de uva integral"],
+      ["Cerveja lata", "🍺", "bebidas", 449, "un", "350 ml", "cerveja lata"],
+      ["Detergente", "🧴", "limpeza", 279, "un", "500 ml", "detergente"],
+      ["Sabão em pó", "🧼", "limpeza", 2190, "pct", "1,6 kg", "sabão em pó"],
+    ] as const).map(([name, emoji, categorySlug, priceCents, unit, description, search]) => ({
+      name, emoji, categorySlug, priceCents, unit, description, search,
+    })),
+  );
+
 export const products: Product[] = Object.entries(catalog).flatMap(([storeId, rows]) =>
   rows.map(([name, emoji, categoryId, priceCents, unit, description], i) => ({
     id: `${storeId}-p${i + 1}`,

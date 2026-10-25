@@ -1,19 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { Category, Product } from "@mercado/shared";
-import { GONDOLA, buildLayout, collide } from "./store-layout";
+import { GONDOLA, buildLayout, collide, findPath } from "./store-layout";
 
-const cat = (id: string): Category => ({ id, slug: id, name: id, emoji: "🛒" });
+const cat = (id: string, name = id): Category => ({ id, slug: id, name, emoji: "🛒" });
 const prod = (id: string, categoryId: string, extra: Partial<Product> = {}): Product => ({
   id, storeId: "s", categoryId, name: id, description: "", priceCents: 100, unit: "un",
   imageUrl: null, stock: 5, active: true, ...extra,
 });
 
 describe("planta da loja 3D", () => {
-  const categories = [cat("a"), cat("b"), cat("vazia")];
-  const products = [prod("a1", "a"), prod("a2", "a"), prod("b1", "b"), prod("b2", "b", { stock: 0 }), prod("b3", "b", { active: false })];
+  const categories = [cat("hortifruti", "Hortifrúti"), cat("a"), cat("b"), cat("vazia")];
+  const products = [
+    prod("banana", "hortifruti"), prod("maca", "hortifruti"), prod("alface", "hortifruti"),
+    prod("a1", "a"), prod("a2", "a"), prod("b1", "b"), prod("b2", "b", { stock: 0 }), prod("b3", "b", { active: false }),
+  ];
   const layout = buildLayout(categories, products);
 
-  it("cria uma gôndola por categoria com produtos à venda", () => {
+  it("cria uma gôndola por categoria de prateleira com produtos à venda", () => {
     expect(layout.gondolas.map((g) => g.category.id)).toEqual(["a", "b"]);
   });
 
@@ -24,12 +27,49 @@ describe("planta da loja 3D", () => {
     expect(b.slots.every((s) => Math.abs(s.z) <= GONDOLA.length / 2)).toBe(true);
   });
 
-  it("não deixa atravessar gôndolas nem paredes", () => {
+  it("põe frutas e verduras em cestos, um produto por cesto, entre a entrada e os corredores", () => {
+    const crates = layout.produce!.tables.flatMap((t) => t.crates);
+    expect(crates.map((c) => c.productId)).toEqual(["banana", "maca", "alface"]);
+    expect(layout.produce!.tables.every((t) => t.z > GONDOLA.length / 2 && t.z < layout.entrance.z)).toBe(true);
+  });
+
+  it("tem uma parada da navegação fácil por seção, fora dos obstáculos", () => {
+    expect(layout.stops.map((s) => s.id)).toEqual(["entrada", "hortifruti", "a", "b", "caixa"]);
+    for (const s of layout.stops) expect(collide(layout, s.x, s.z)).toEqual({ x: s.x, z: s.z });
+  });
+
+  it("não deixa atravessar gôndolas, bancas nem paredes", () => {
     const g = layout.gondolas[0];
     const inside = collide(layout, g.x + 0.1, 0);
     expect(Math.abs(inside.x - g.x)).toBeGreaterThanOrEqual(GONDOLA.depth / 2);
+    const t = layout.produce!.tables[0];
+    const onTable = collide(layout, t.x, t.z);
+    expect(onTable).not.toEqual({ x: t.x, z: t.z });
     const out = collide(layout, 1000, 1000);
     expect(out.x).toBeLessThan(layout.bounds.maxX);
     expect(out.z).toBeLessThan(layout.bounds.maxZ);
+  });
+});
+
+describe("caminho automático", () => {
+  const layout = buildLayout(
+    [cat("hortifruti", "Hortifrúti"), cat("a"), cat("b"), cat("c")],
+    [prod("banana", "hortifruti"), prod("maca", "hortifruti"), prod("uva", "hortifruti"), prod("a1", "a"), prod("b1", "b"), prod("c1", "c")],
+  );
+
+  it("vai da entrada até um corredor sem atravessar bancas nem gôndolas", () => {
+    const target = layout.stops.find((s) => s.id === "b")!;
+    const path = findPath(layout, layout.entrance, target);
+    expect(path.at(-1)).toEqual(target);
+    let prev = layout.entrance;
+    for (const p of path) {
+      const steps = Math.ceil(Math.hypot(p.x - prev.x, p.z - prev.z) / 0.05);
+      for (let i = 0; i <= steps; i++) {
+        const x = prev.x + ((p.x - prev.x) * i) / steps;
+        const z = prev.z + ((p.z - prev.z) * i) / steps;
+        expect(collide(layout, x, z, 0.25)).toEqual({ x, z });
+      }
+      prev = p;
+    }
   });
 });

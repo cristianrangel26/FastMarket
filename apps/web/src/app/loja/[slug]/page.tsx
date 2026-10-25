@@ -77,6 +77,18 @@ function StoreDetail() {
         </div>
       </section>
 
+      <Link
+        href={`/loja/${store.slug}/3d`}
+        className="card flex items-center gap-4 bg-gradient-to-r from-accent/15 to-primary-soft p-4 transition hover:border-accent"
+      >
+        <span className="text-4xl" aria-hidden>🕶️</span>
+        <span className="flex-1">
+          <span className="block font-semibold">Entrar na loja em 3D</span>
+          <span className="block text-sm text-muted">Ande pelos corredores e pegue os produtos nas prateleiras, como no mercado de verdade.</span>
+        </span>
+        <span className="btn-primary hidden sm:inline-flex">Entrar</span>
+      </Link>
+
       <div className="flex flex-wrap items-center gap-2">
         <input className="input sm:w-72" placeholder="Buscar nesta loja" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="flex gap-1 overflow-x-auto">

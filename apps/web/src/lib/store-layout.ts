@@ -1,8 +1,9 @@
 import type { Category, Product } from "@mercado/shared";
 
 // Monta a planta da loja 3D a partir do catálogo: um hortifrúti com bancas e
-// cestos logo depois da entrada e, ao fundo, uma gôndola dupla por categoria,
-// com os produtos repetidos nas prateleiras como num mercado real.
+// cestos logo depois da entrada, uma gôndola dupla por categoria (com ponta de
+// gôndola de ofertas) e, na parede do fundo, os balcões refrigerados dos
+// produtos gelados, com os produtos repetidos como num mercado real.
 // Unidades em metros. O eixo z é o comprimento dos corredores; a entrada fica em +z.
 
 export const GONDOLA = { length: 7.2, height: 1.9, depth: 0.9 };
@@ -14,6 +15,17 @@ export const TABLE = { width: 1.9, depth: 1.1, height: 0.75 };
 export const CRATE = { width: 0.8, depth: 0.6, height: 0.22 };
 const TABLE_GAP = { x: 1.5, z: 1.7 };
 const MARGIN = { back: 3, side: 2.5, entrance: 4.5 };
+/** Balcão refrigerado aberto, encostado na parede do fundo. */
+export const COOLER = { height: 2.1, depth: 0.95, shelves: [0.3, 0.57, 0.84, 1.11, 1.38, 1.62], maxLength: 4.8 };
+/** Ponta de gôndola: prateleiras viradas para a entrada, com ofertas. */
+export const ENDCAP = { depth: 0.5 };
+/** Carrinho de compras (encaixados uns nos outros perto da entrada). */
+export const CART = { width: 0.55, length: 0.95, height: 1.0 };
+
+/** Categorias que ficam nos balcões refrigerados em vez das gôndolas. */
+export function isCold(c: Category): boolean {
+  return /latic|congel|frios|a[cç]ougue|carnes/i.test(`${c.slug} ${c.name}`);
+}
 
 /** Categorias exibidas em cestos em vez de prateleiras. */
 export function isProduce(c: Category): boolean {
@@ -25,13 +37,26 @@ export interface Slot {
   x: number;
   y: number;
   z: number;
-  /** 1 = frente virada para +x, -1 = para -x. */
-  facing: 1 | -1;
+  /** Lado da gôndola: 1 = frente virada para +x, -1 = para -x (0 fora das gôndolas). */
+  facing: 1 | -1 | 0;
+  /** Rotação em y da embalagem; com 0 a frente fica virada para +z. */
+  rotY: number;
 }
 
 export interface Gondola {
   category: Category;
   x: number;
+  slots: Slot[];
+  /** Ponta de gôndola virada para a entrada. */
+  endcap: Slot[];
+}
+
+export interface Cooler {
+  category: Category;
+  /** Centro do balcão. A frente fica virada para +z. */
+  x: number;
+  z: number;
+  length: number;
   slots: Slot[];
 }
 
@@ -68,12 +93,16 @@ export interface Stop {
 
 export interface StoreLayout {
   gondolas: Gondola[];
+  coolers: Cooler[];
+  carts: { x: number; z: number; rotY: number }[];
   produce: { category: Category; tables: ProduceTable[] } | null;
   obstacles: Obstacle[];
   stops: Stop[];
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   entrance: { x: number; z: number };
   checkout: { x: number; z: number };
+  /** Posição x de cada caixa (o primeiro é o que leva ao carrinho). */
+  checkoutLanes: number[];
 }
 
 /** Quantas frentes de cada produto, para as prateleiras parecerem cheias. */
@@ -90,7 +119,8 @@ export function buildLayout(categories: Category[], products: Product[]): StoreL
   const available = products.filter((p) => p.active && p.stock > 0);
   const used = categories.filter((c) => available.some((p) => p.categoryId === c.id));
   const produceCategory = used.find(isProduce) ?? null;
-  const shelved = used.filter((c) => c !== produceCategory);
+  const cold = used.filter((c) => c !== produceCategory && isCold(c));
+  const shelved = used.filter((c) => c !== produceCategory && !cold.includes(c));
 
   const spacing = GONDOLA.depth + AISLE_WIDTH;
   const offset = ((shelved.length - 1) * spacing) / 2;
@@ -117,10 +147,26 @@ export function buildLayout(categories: Category[], products: Product[]): StoreL
           y: SHELF_HEIGHTS[shelf],
           z: GONDOLA.length / 2 - SLOT_WIDTH / 2 - col * SLOT_WIDTH,
           facing,
+          rotY: (facing * Math.PI) / 2,
         });
       });
     }
-    return { category, x, slots };
+    // Ponta de gôndola: os dois primeiros produtos, em destaque.
+    const endcap: Slot[] = [];
+    const featured = items.slice(0, 2);
+    SHELF_HEIGHTS.forEach((y, shelf) => {
+      for (let col = 0; col < 3; col++) {
+        endcap.push({
+          productId: featured[(shelf + (col === 1 ? 1 : 0)) % featured.length].id,
+          x: x + (col - 1) * SLOT_WIDTH,
+          y,
+          z: GONDOLA.length / 2 + ENDCAP.depth - 0.15,
+          facing: 0,
+          rotY: 0,
+        });
+      }
+    });
+    return { category, x, slots, endcap };
   });
 
   // Largura da loja: o que for maior entre os corredores e o hortifrúti.
@@ -151,14 +197,49 @@ export function buildLayout(categories: Category[], products: Product[]): StoreL
   }
   const produceDepth = rows ? rows * TABLE.depth + (rows - 1) * TABLE_GAP.z : 0;
   const maxZ = produceStartZ + produceDepth + MARGIN.entrance;
-  const minZ = (shelved.length ? -GONDOLA.length / 2 : 0) - MARGIN.back;
+  const backAisle = (shelved.length ? -GONDOLA.length / 2 : 0) - MARGIN.back;
+  const minZ = cold.length ? backAisle - COOLER.depth + 0.2 : backAisle;
+
+  // Balcões refrigerados lado a lado na parede do fundo.
+  const coolerGap = 0.3;
+  const coolerLength = cold.length
+    ? Math.min(COOLER.maxLength, (2 * halfWidth - 2 - (cold.length - 1) * coolerGap) / cold.length)
+    : 0;
+  const coolerZ = minZ + COOLER.depth / 2 + 0.05;
+  const coolerRun = cold.length * coolerLength + (cold.length - 1) * coolerGap;
+  const coolers = cold.map((category, ci): Cooler => {
+    const cx = -coolerRun / 2 + coolerLength / 2 + ci * (coolerLength + coolerGap);
+    const items = available.filter((p) => p.categoryId === category.id);
+    const perRow = Math.floor((coolerLength - 0.2) / SLOT_WIDTH);
+    const total = perRow * COOLER.shelves.length;
+    const facings = facingsFor(items.length, total);
+    const sequence: string[] = [];
+    while (sequence.length < total) {
+      for (const p of items) for (let f = 0; f < facings && sequence.length < total; f++) sequence.push(p.id);
+    }
+    const slots = sequence.map((productId, i): Slot => ({
+      productId,
+      x: cx - ((perRow - 1) * SLOT_WIDTH) / 2 + (i % perRow) * SLOT_WIDTH,
+      y: COOLER.shelves[COOLER.shelves.length - 1 - Math.floor(i / perRow)],
+      z: coolerZ + COOLER.depth / 2 - 0.22,
+      facing: 0,
+      rotY: 0,
+    }));
+    return { category, x: cx, z: coolerZ, length: coolerLength, slots };
+  });
 
   const obstacles: Obstacle[] = [
     ...gondolas.map((g) => ({
       minX: g.x - GONDOLA.depth / 2,
       maxX: g.x + GONDOLA.depth / 2,
       minZ: -GONDOLA.length / 2,
-      maxZ: GONDOLA.length / 2,
+      maxZ: GONDOLA.length / 2 + ENDCAP.depth,
+    })),
+    ...coolers.map((c) => ({
+      minX: c.x - c.length / 2,
+      maxX: c.x + c.length / 2,
+      minZ: c.z - COOLER.depth / 2,
+      maxZ: c.z + COOLER.depth / 2,
     })),
     ...tables.map((t) => ({
       minX: t.x - TABLE.width / 2,
@@ -170,7 +251,17 @@ export function buildLayout(categories: Category[], products: Product[]): StoreL
 
   const entrance = { x: 0, z: maxZ - 1.2 };
   const checkout = { x: -halfWidth + 1.6, z: maxZ - 2.6 };
-  obstacles.push({ minX: checkout.x - 0.4, maxX: checkout.x + 0.4, minZ: checkout.z - 1.1, maxZ: checkout.z + 1.1 });
+  // Dois caixas lado a lado; a pessoa usa o primeiro.
+  const checkoutLanes = [checkout.x, checkout.x + 2.2];
+  for (const lx of checkoutLanes) obstacles.push({ minX: lx - 0.4, maxX: lx + 0.4, minZ: checkout.z - 1.1, maxZ: checkout.z + 1.1 });
+  // Fila de carrinhos encaixados, ao lado da entrada.
+  const carts = [0, 1, 2, 3].map((i) => ({ x: halfWidth - 0.9, z: maxZ - 1.0 - i * 0.28, rotY: 0 }));
+  obstacles.push({
+    minX: halfWidth - 0.9 - CART.width / 2,
+    maxX: halfWidth - 0.9 + CART.width / 2,
+    minZ: carts[3].z - CART.length / 2,
+    maxZ: carts[0].z + CART.length / 2,
+  });
 
   // Paradas da navegação fácil, na ordem de um passeio pela loja.
   const stops: Stop[] = [{ id: "entrada", label: "Entrada", emoji: "🚪", x: entrance.x, z: entrance.z, yaw: 0 }];
@@ -183,16 +274,25 @@ export function buildLayout(categories: Category[], products: Product[]): StoreL
     const x = g.x + GONDOLA.depth / 2 + 1.1;
     stops.push({ id: g.category.id, label: g.category.name, emoji: g.category.emoji, x, z: 0.6, yaw: yawTo(x, 0.6, g.x, 0.2) });
   }
-  stops.push({ id: "caixa", label: "Caixa", emoji: "💳", x: checkout.x + 1.6, z: checkout.z, yaw: yawTo(checkout.x + 1.6, checkout.z, checkout.x, checkout.z) });
+  for (const c of coolers) {
+    // De frente para o balcão refrigerado.
+    stops.push({ id: c.category.id, label: c.category.name, emoji: c.category.emoji, x: c.x, z: c.z + COOLER.depth / 2 + 1.9, yaw: 0 });
+  }
+  // No corredor do caixa, olhando ao longo da esteira.
+  const caixa = { x: checkout.x + 1.1, z: checkout.z + 2.0 };
+  stops.push({ id: "caixa", label: "Caixa", emoji: "💳", ...caixa, yaw: yawTo(caixa.x, caixa.z, checkout.x + 0.7, checkout.z - 0.8) });
 
   return {
     gondolas,
+    coolers,
+    carts,
     produce: produceCategory && tables.length ? { category: produceCategory, tables } : null,
     obstacles,
     stops,
     bounds: { minX: -halfWidth, maxX: halfWidth, minZ, maxZ },
     entrance,
     checkout,
+    checkoutLanes,
   };
 }
 

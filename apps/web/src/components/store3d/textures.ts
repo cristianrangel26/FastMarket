@@ -62,33 +62,7 @@ export function packTexture(p: Product): THREE.Texture {
 
   const [c, ctx] = canvas(256, 320);
   const color = brandColor(p.name);
-  ctx.fillStyle = color;
-  ctx.fillRect(0, 0, 256, 320);
-  // Faixa clara com brilho, imitando embalagem impressa.
-  const g = ctx.createLinearGradient(0, 0, 256, 0);
-  g.addColorStop(0, "rgba(255,255,255,0.25)");
-  g.addColorStop(0.5, "rgba(255,255,255,0)");
-  g.addColorStop(1, "rgba(0,0,0,0.15)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 256, 320);
-  ctx.fillStyle = "#fff";
-  ctx.beginPath();
-  ctx.roundRect(18, 40, 220, 170, 24);
-  ctx.fill();
-
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  if (!isUrl(p.imageUrl)) {
-    ctx.font = "110px system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
-    ctx.fillText(p.imageUrl ?? "🛍️", 128, 128);
-  }
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 26px system-ui, sans-serif";
-  wrapText(ctx, p.name, 228, 2).forEach((l, i) => ctx.fillText(l, 128, 242 + i * 30));
-  if (p.description) {
-    ctx.font = "20px system-ui, sans-serif";
-    ctx.fillText(p.description, 128, 300);
-  }
+  drawPackLabel(ctx, p, color);
   const tex = toTexture(key, c);
 
   if (isUrl(p.imageUrl)) {
@@ -107,6 +81,76 @@ export function packTexture(p: Product): THREE.Texture {
     img.src = p.imageUrl;
   }
   return tex;
+}
+
+const EMOJI_FONT = "system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+
+/** Rótulo no estilo de marca própria de supermercado: faixa da marca, "foto" do produto, nome e peso. */
+function drawPackLabel(ctx: CanvasRenderingContext2D, p: Product, color: string) {
+  const bg = ctx.createLinearGradient(0, 0, 0, 320);
+  bg.addColorStop(0, shade(color, 0.18));
+  bg.addColorStop(0.55, color);
+  bg.addColorStop(1, shade(color, -0.35));
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, 256, 320);
+  // Faixa diagonal clara, comum em embalagens.
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.beginPath();
+  ctx.moveTo(0, 210);
+  ctx.lineTo(256, 160);
+  ctx.lineTo(256, 205);
+  ctx.lineTo(0, 255);
+  ctx.fill();
+  // Selo da marca própria
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.ellipse(128, 30, 74, 20, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = shade(color, -0.3);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "italic 900 22px Georgia, 'Times New Roman', serif";
+  ctx.fillText("Seleção", 128, 31);
+  // "Foto" do produto com brilho atrás
+  const glow = ctx.createRadialGradient(128, 118, 8, 128, 118, 92);
+  glow.addColorStop(0, "rgba(255,255,255,0.85)");
+  glow.addColorStop(0.6, "rgba(255,255,255,0.25)");
+  glow.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(20, 30, 216, 180);
+  if (!isUrl(p.imageUrl)) {
+    ctx.font = `118px ${EMOJI_FONT}`;
+    ctx.shadowColor = "rgba(0,0,0,0.25)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 6;
+    ctx.fillText(p.imageUrl ?? "🛍️", 128, 124);
+    ctx.shadowColor = "transparent";
+  }
+  // Nome
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = "rgba(0,0,0,0.35)";
+  ctx.shadowBlur = 4;
+  ctx.font = "900 27px 'Arial Black', 'Helvetica Neue', Arial, sans-serif";
+  wrapText(ctx, p.name.toUpperCase(), 232, 2).forEach((l, i, all) => ctx.fillText(l, 128, (all.length > 1 ? 232 : 246) + i * 30, 236));
+  ctx.shadowColor = "transparent";
+  // Peso, num selo redondo
+  if (p.description) {
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.roundRect(78, 284, 100, 28, 14);
+    ctx.fill();
+    ctx.fillStyle = shade(color, -0.4);
+    ctx.font = "bold 18px system-ui, sans-serif";
+    ctx.fillText(p.description, 128, 299, 92);
+  }
+}
+
+/** Clareia (amount > 0) ou escurece (amount < 0) uma cor #rrggbb. */
+function shade(hex: string, amount: number): string {
+  const c = new THREE.Color(hex);
+  if (amount > 0) c.lerp(new THREE.Color("#ffffff"), amount);
+  else c.lerp(new THREE.Color("#000000"), -amount);
+  return `#${c.getHexString()}`;
 }
 
 export function priceTagTexture(p: Product): THREE.Texture {
@@ -240,5 +284,154 @@ export function shadowTexture(): THREE.Texture {
   g.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 128, 128);
+  return toTexture(key, c);
+}
+
+/** Porcelanato 60 × 60 cm (a textura cobre 1,2 m), com leve variação entre placas. */
+export function tileTexture(): THREE.Texture {
+  const key = "tile";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(512, 512);
+  const tones = ["#dcd7ce", "#d6d1c7", "#dfdad2", "#d9d4ca"];
+  for (let i = 0; i < 4; i++) {
+    const x = (i % 2) * 256;
+    const y = Math.floor(i / 2) * 256;
+    ctx.fillStyle = tones[i];
+    ctx.fillRect(x, y, 256, 256);
+    // Veios bem sutis, como pedra
+    for (let k = 0; k < 220; k++) {
+      ctx.fillStyle = `rgba(${k % 2 ? "255,255,255" : "120,110,95"},${0.04 + ((k * 37) % 7) / 200})`;
+      const px = x + ((k * 97 + i * 31) % 256);
+      const py = y + ((k * 53 + i * 71) % 256);
+      ctx.fillRect(px, py, 2 + (k % 3), 1 + (k % 2));
+    }
+  }
+  ctx.fillStyle = "#a9a194";
+  ctx.fillRect(0, 0, 512, 3);
+  ctx.fillRect(0, 255, 512, 3);
+  ctx.fillRect(0, 0, 3, 512);
+  ctx.fillRect(255, 0, 3, 512);
+  const t = toTexture(key, c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** Painel perfurado do fundo das gôndolas. */
+export function pegboardTexture(): THREE.Texture {
+  const key = "pegboard";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(64, 64);
+  ctx.fillStyle = "#e9ebee";
+  ctx.fillRect(0, 0, 64, 64);
+  ctx.fillStyle = "#9aa1a9";
+  for (const [x, y] of [[16, 16], [48, 16], [16, 48], [48, 48]]) {
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const t = toTexture(key, c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/** Grade de arame cromado (com transparência) para os carrinhos. */
+export function wireTexture(): THREE.Texture {
+  const key = "wire";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(128, 128);
+  ctx.clearRect(0, 0, 128, 128);
+  ctx.strokeStyle = "#e9edf2";
+  ctx.lineWidth = 3;
+  for (let i = 0; i <= 128; i += 16) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, 128);
+    ctx.moveTo(0, i);
+    ctx.lineTo(128, i);
+    ctx.stroke();
+  }
+  const t = toTexture(key, c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/** Esteira do caixa: borracha escura com frisos. */
+export function conveyorTexture(): THREE.Texture {
+  const key = "conveyor";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(64, 64);
+  ctx.fillStyle = "#1d1f22";
+  ctx.fillRect(0, 0, 64, 64);
+  ctx.fillStyle = "#2a2d31";
+  for (let y = 0; y < 64; y += 8) ctx.fillRect(0, y, 64, 3);
+  const t = toTexture(key, c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/** Vista da rua pela fachada de vidro: céu claro, prédios e calçada. */
+export function outsideTexture(): THREE.Texture {
+  const key = "outside";
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(1024, 256);
+  const sky = ctx.createLinearGradient(0, 0, 0, 256);
+  sky.addColorStop(0, "#9fc8ef");
+  sky.addColorStop(0.6, "#e3f0fb");
+  sky.addColorStop(1, "#f6f4ef");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, 1024, 256);
+  // Prédios ao longe
+  for (let i = 0; i < 18; i++) {
+    const w = 40 + ((i * 53) % 50);
+    const h = 60 + ((i * 89) % 90);
+    const x = i * 58 - 10;
+    ctx.fillStyle = ["#c9d3dc", "#d8dee3", "#bfc9d2", "#e1e4e6"][i % 4];
+    ctx.fillRect(x, 190 - h, w, h);
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    for (let wy = 190 - h + 8; wy < 182; wy += 14) for (let wx = x + 6; wx < x + w - 6; wx += 12) ctx.fillRect(wx, wy, 6, 7);
+  }
+  // Árvores e calçada
+  for (let i = 0; i < 9; i++) {
+    ctx.fillStyle = "#7fae6a";
+    ctx.beginPath();
+    ctx.arc(60 + i * 115, 178, 26, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#d9d6cf";
+  ctx.fillRect(0, 196, 1024, 60);
+  ctx.fillStyle = "#c8c4bb";
+  ctx.fillRect(0, 196, 1024, 4);
+  return toTexture(key, c);
+}
+
+/** Cabeceira de ponta de gôndola com a oferta. */
+export function promoTexture(title: string): THREE.Texture {
+  const key = `promo:${title}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const [c, ctx] = canvas(512, 192);
+  ctx.fillStyle = "#e3262f";
+  ctx.fillRect(0, 0, 512, 192);
+  ctx.fillStyle = "#ffd60a";
+  ctx.beginPath();
+  ctx.moveTo(0, 120);
+  ctx.lineTo(512, 92);
+  ctx.lineTo(512, 192);
+  ctx.lineTo(0, 192);
+  ctx.fill();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "900 78px 'Arial Black', Arial, sans-serif";
+  ctx.fillText("OFERTA", 256, 60);
+  ctx.fillStyle = "#b3141c";
+  ctx.font = "bold 40px system-ui, sans-serif";
+  ctx.fillText(title, 256, 150, 470);
   return toTexture(key, c);
 }

@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CartStoreConflictError, cartItemCount, cartSubtotalCents, formatBRL, type Product, type Store } from "@mercado/shared";
 import { api, useApp } from "@/lib/app-store";
 import { buildLayout, findPath, type Stop } from "@/lib/store-layout";
 import { Thumb } from "@/components/ui";
 import { createXRStore, useXRSessionModeSupported } from "@react-three/xr";
 import { Navigator } from "./navigator";
-import { MoveInput, StoreScene } from "./scene";
+import { MoveInput, StoreScene, type Quality } from "./scene";
 
 export default function Store3D({ store }: { store: Store }) {
   const s = useApp();
@@ -18,8 +18,14 @@ export default function Store3D({ store }: { store: Store }) {
   const [picked, setPicked] = useState<Product | null>(null);
   const [help, setHelp] = useState(true);
   const [nav] = useState(() => new Navigator());
-  const [stopIndex, setStopIndex] = useState(0);
+  /** Seção atual; -1 enquanto a pessoa ainda está onde começou. */
+  const [stopIndex, setStopIndex] = useState(-1);
   const [freeWalk, setFreeWalk] = useState(false);
+  const [tour, setTour] = useState(false);
+  // Qualidade alta no computador; leve no celular, que esquenta e gasta bateria.
+  const [quality, setQuality] = useState<Quality>(() =>
+    window.matchMedia("(pointer: fine)").matches && window.innerWidth >= 900 ? "alta" : "leve",
+  );
   const [xr] = useState(() => createXRStore({ emulate: false, hand: { teleportPointer: false }, controller: { teleportPointer: false } }));
   const vrSupported = useXRSessionModeSupported("immersive-vr");
 
@@ -30,6 +36,14 @@ export default function Store3D({ store }: { store: Store }) {
   const layout = useMemo(() => buildLayout(s.categories, storeProducts), [s.categories, assortmentKey]);
   const byId = useMemo(() => new Map(storeProducts.map((p) => [p.id, p])), [storeProducts]);
   const inCart = s.cart.storeId === store.id;
+  // Link direto para uma seção: /loja/<slug>/3d?secao=laticinios
+  const [start] = useState(() => {
+    const wanted = new URLSearchParams(window.location.search).get("secao");
+    const i = layout.stops.findIndex((st) => st.id === wanted || st.label.toLowerCase() === wanted?.toLowerCase());
+    const stop = layout.stops[Math.max(0, i)];
+    return { index: Math.max(0, i), x: stop.x, z: stop.z, yaw: stop.yaw };
+  });
+  const current = stopIndex === -1 ? start.index : stopIndex;
 
   /** Leva a pessoa sozinha até a seção, já de frente para as prateleiras. */
   function goTo(index: number) {
@@ -42,7 +56,33 @@ export default function Store3D({ store }: { store: Store }) {
     setPicked(null);
   }
 
-  if (layout.gondolas.length === 0) {
+  // Tour de apresentação: passa por todas as seções sozinho, com uma pausa em cada.
+  const tourState = useRef({ index: current, waitUntil: 0 });
+  useEffect(() => {
+    if (!tour) return;
+    tourState.current.index = current;
+    tourState.current.waitUntil = 0;
+    const timer = setInterval(() => {
+      const st = tourState.current;
+      if (nav.path.length || nav.finalYaw !== null) return;
+      const now = Date.now();
+      if (!st.waitUntil) {
+        st.waitUntil = now + 2500;
+        return;
+      }
+      if (now < st.waitUntil) return;
+      st.waitUntil = 0;
+      st.index = (st.index + 1) % layout.stops.length;
+      const stop = layout.stops[st.index];
+      nav.go(findPath(layout, nav.position, stop), stop.yaw);
+      setStopIndex(st.index);
+    }, 200);
+    return () => clearInterval(timer);
+    // Só reinicia quando liga/desliga o tour.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tour, layout, nav]);
+
+  if (!layout.gondolas.length && !layout.coolers.length && !layout.produce) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
         <p>Esta loja ainda não tem produtos à venda.</p>
@@ -59,6 +99,8 @@ export default function Store3D({ store }: { store: Store }) {
         products={byId}
         move={move}
         nav={nav}
+        quality={quality}
+        start={start}
         onPick={(p) => { setPicked(p); setHelp(false); }}
         onCheckout={() => {
           void xr.getState().session?.end();
@@ -71,15 +113,41 @@ export default function Store3D({ store }: { store: Store }) {
         onClosePicked={() => setPicked(null)}
       />
 
-      {/* Topo */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
+      {tour ? (
+        <>
+          <button
+            className="absolute right-3 top-3 rounded-full bg-black/45 px-4 py-2 text-base text-white backdrop-blur"
+            onClick={() => { setTour(false); nav.cancel(); }}
+          >
+            ✕ Sair do tour
+          </button>
+          <div key={current} className="pointer-events-none absolute bottom-10 left-8 animate-[fadein_0.8s_ease-out] text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
+            <p className="text-sm uppercase tracking-[0.3em] text-white/80">{store.name}</p>
+            <p className="text-4xl font-bold sm:text-5xl">{layout.stops[current].emoji} {layout.stops[current].label}</p>
+          </div>
+        </>
+      ) : (
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-wrap items-start justify-between gap-2 p-3">
         <Link href={`/loja/${store.slug}`} className="btn-ghost pointer-events-auto px-4 py-3 text-lg shadow-sm">← Ver como lista</Link>
-        <Link href="/carrinho" className="btn-primary pointer-events-auto px-4 py-3 text-lg shadow-md">
-          🛒 {inCart ? cartItemCount(s.cart) : 0} · {formatBRL(inCart ? cartSubtotalCents(s.cart) : 0)}
-        </Link>
+        <div className="pointer-events-auto flex flex-wrap justify-end gap-2">
+          <button className="btn-ghost px-3 py-3 text-base shadow-sm" onClick={() => { setTour(true); setHelp(false); setPicked(null); }} title="Passeio automático pela loja, bom para apresentar">
+            🎬 Tour
+          </button>
+          <button
+            className="btn-ghost px-3 py-3 text-base shadow-sm"
+            onClick={() => setQuality((q) => (q === "alta" ? "leve" : "alta"))}
+            title="Qualidade da imagem"
+          >
+            {quality === "alta" ? "✨ Alta" : "⚡ Leve"}
+          </button>
+          <Link href="/carrinho" className="btn-primary px-4 py-3 text-lg shadow-md">
+            🛒 {inCart ? cartItemCount(s.cart) : 0} · {formatBRL(inCart ? cartSubtotalCents(s.cart) : 0)}
+          </Link>
+        </div>
       </div>
+      )}
 
-      {help && (
+      {help && !tour && (
         <button
           onClick={() => setHelp(false)}
           className="absolute left-1/2 top-20 z-10 w-[min(92vw,460px)] -translate-x-1/2 rounded-2xl bg-black/75 p-5 text-left text-lg leading-snug text-white backdrop-blur"
@@ -91,12 +159,12 @@ export default function Store3D({ store }: { store: Store }) {
         </button>
       )}
 
-      {freeWalk && !picked && <Joystick move={move} />}
+      {freeWalk && !picked && !tour && <Joystick move={move} />}
 
-      {!picked && (
+      {!picked && !tour && (
         <EasyNav
           stops={layout.stops}
-          current={stopIndex}
+          current={current}
           freeWalk={freeWalk}
           onGo={goTo}
           onTurn={(d) => nav.turn(d)}
@@ -104,7 +172,7 @@ export default function Store3D({ store }: { store: Store }) {
         />
       )}
 
-      {vrSupported && (
+      {vrSupported && !tour && (
         <button className="btn-primary absolute right-3 top-20 py-3 text-lg shadow-lg" onClick={() => void xr.enterVR()}>
           🥽 Entrar em VR
         </button>

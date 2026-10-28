@@ -1,15 +1,18 @@
 "use client";
 
-import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
-import { Environment, Lightformer } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Environment, Lightformer, MeshReflectorMaterial } from "@react-three/drei";
+import { Bloom, EffectComposer, N8AO, SMAA, ToneMapping, Vignette } from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import { XR, XROrigin, useXR, useXRControllerLocomotion, type XRStore } from "@react-three/xr";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { formatBRL, type Product, type Store } from "@mercado/shared";
-import { GONDOLA, SHELF_HEIGHTS, SLOT_WIDTH, TABLE, collide, type Slot, type StoreLayout } from "@/lib/store-layout";
-import { packageParts } from "./packaging";
+import { collide, type StoreLayout } from "@/lib/store-layout";
+import { CEILING, Carts, CeilingLights, CheckoutLanes, CoolerMesh, GondolaMesh, StoreBanner, Storefront, ceilingLightPositions } from "./fixtures";
+import { Sign } from "./parts";
 import { ProduceSection } from "./produce";
-import { brandColor, ceilingTexture, floorTexture, priceTagTexture, shadowTexture, signTexture } from "./textures";
+import { ceilingTexture, signTexture, tileTexture } from "./textures";
 import type { Navigator } from "./navigator";
 
 /** Direção pedida pelo joystick, de -1 a 1. Mutável de propósito: é lida a cada quadro. */
@@ -22,10 +25,7 @@ export class MoveInput {
   }
 }
 
-/**
- * Deslocamento automático da navegação fácil: segue um caminho e termina
- * olhando para a seção. Qualquer comando manual cancela.
- */
+export type Quality = "alta" | "leve";
 
 interface SceneProps {
   store: Store;
@@ -33,6 +33,10 @@ interface SceneProps {
   products: Map<string, Product>;
   move: MoveInput;
   nav: Navigator;
+  /** Onde a pessoa começa (a entrada, ou a seção pedida no link). */
+  start: { x: number; z: number; yaw: number };
+  /** "alta": sombras, reflexo no piso e efeitos de câmera; "leve": para celulares mais simples. */
+  quality: Quality;
   onPick: (product: Product) => void;
   onCheckout: () => void;
   xr: XRStore;
@@ -45,28 +49,36 @@ interface SceneProps {
 
 const EYE_HEIGHT = 1.6;
 const SPEED = 2.6; // m/s, passo de quem empurra um carrinho
-const CEILING = 3.6;
 
 export function StoreScene(props: SceneProps) {
+  const high = props.quality === "alta";
+  // Alguns produtos embalados da loja, na esteira do caixa.
+  const beltProducts = useMemo(
+    () => props.layout.gondolas.flatMap((g) => g.endcap.slice(0, 1)).map((s) => props.products.get(s.productId)).filter((p): p is Product => !!p),
+    [props.layout, props.products],
+  );
   return (
     <Canvas
-      shadows={false}
-      dpr={[1, 1.75]}
-      camera={{ fov: 70, near: 0.05, far: 80, position: [props.layout.entrance.x, EYE_HEIGHT, props.layout.entrance.z] }}
-      gl={{ antialias: true }}
+      key={props.quality}
+      shadows={high ? "soft" : false}
+      dpr={high ? [1, 2] : [1, 1.5]}
+      camera={{ fov: 62, near: 0.05, far: 80, position: [props.start.x, EYE_HEIGHT, props.start.z] }}
+      gl={{ antialias: false, powerPreference: "high-performance", stencil: false }}
       style={{ touchAction: "none" }}
-      onCreated={({ gl }) => {
-        gl.toneMapping = THREE.ACESFilmicToneMapping;
-        gl.toneMappingExposure = 1.05;
-      }}
     >
       <XR store={props.xr}>
       <color attach="background" args={["#f3f1ec"]} />
-      <fog attach="fog" args={["#f3f1ec", 18, 45]} />
-      <Lights layout={props.layout} />
-      <Room store={props.store} layout={props.layout} />
+      <fog attach="fog" args={["#efece6", 22, 60]} />
+      <Lights layout={props.layout} shadows={high} />
+      <Room layout={props.layout} reflections={high} />
+      <StoreBanner store={props.store} layout={props.layout} />
+      <CeilingLights layout={props.layout} />
+      <Storefront layout={props.layout} />
       {props.layout.gondolas.map((g) => (
         <GondolaMesh key={g.category.id} gondola={g} products={props.products} onPick={props.onPick} />
+      ))}
+      {props.layout.coolers.map((c) => (
+        <CoolerMesh key={c.category.id} cooler={c} products={props.products} onPick={props.onPick} />
       ))}
       {props.layout.produce && (
         <>
@@ -76,12 +88,13 @@ export function StoreScene(props: SceneProps) {
             position={[0, 2.85, props.layout.produce.tables[0].z]}
             rotationY={0}
             size={[2.2, 0.69]}
+            glow={1.1}
           />
         </>
       )}
-      <ContactShadows layout={props.layout} />
-      <Checkout layout={props.layout} onCheckout={props.onCheckout} />
-      <PlayerControls layout={props.layout} move={props.move} nav={props.nav} />
+      <Carts carts={props.layout.carts} />
+      <CheckoutLanes layout={props.layout} products={beltProducts} onCheckout={props.onCheckout} />
+      <PlayerControls layout={props.layout} move={props.move} nav={props.nav} startYaw={props.start.yaw} />
       <VRPlayer layout={props.layout} />
       {props.picked && (
         <VRProductPanel
@@ -92,289 +105,160 @@ export function StoreScene(props: SceneProps) {
           onClose={props.onClosePicked}
         />
       )}
+      <Effects quality={props.quality} />
       </XR>
     </Canvas>
   );
 }
 
-function Lights({ layout }: { layout: StoreLayout }) {
+/**
+ * Luz de mercado: forro cheio de luminárias. O reflexo (ambiente) é gerado com
+ * retângulos de luz nas mesmas posições das luminárias, e uma luz de cima faz
+ * as sombras das prateleiras sobre os produtos.
+ */
+function Lights({ layout, shadows }: { layout: StoreLayout; shadows: boolean }) {
   const { minX, maxX, minZ, maxZ } = layout.bounds;
-  const panels: [number, number][] = [];
-  for (let x = minX + 2; x < maxX - 1; x += 3.5) for (let z = minZ + 2; z < maxZ - 1; z += 4) panels.push([x, z]);
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+  const half = Math.max(maxX - minX, maxZ - minZ) / 2 + 1;
+  const lights = useMemo(() => ceilingLightPositions(layout), [layout]);
+  const [target] = useState(() => new THREE.Object3D());
   return (
     <>
-      <hemisphereLight args={["#ffffff", "#d8d2c4", 1.1]} />
-      <directionalLight position={[4, 10, 6]} intensity={0.9} />
-      {panels.map(([x, z]) => (
-        <mesh key={`${x}:${z}`} position={[x, CEILING - 0.01, z]} rotation={[Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[1.6, 0.4]} />
-          <meshBasicMaterial color="#ffffff" toneMapped={false} />
-        </mesh>
-      ))}
-      {/* Reflexos suaves sem baixar nenhum arquivo de ambiente. */}
-      <Environment resolution={64} frames={1}>
-        <Lightformer intensity={2} position={[0, 5, 0]} rotation-x={Math.PI / 2} scale={[20, 20, 1]} />
-        <Lightformer intensity={0.6} position={[0, 2, 10]} scale={[20, 4, 1]} />
-        <Lightformer intensity={0.6} position={[0, 2, -10]} rotation-y={Math.PI} scale={[20, 4, 1]} />
+      <hemisphereLight args={["#ffffff", "#bfb6a6", 0.35]} />
+      <primitive object={target} position={[cx, 0, cz]} />
+      <directionalLight
+        position={[cx + 3, 14, cz + 5]}
+        target={target}
+        intensity={1.5}
+        castShadow={shadows}
+        shadow-mapSize={[2048, 2048]}
+        shadow-bias={-0.0004}
+        shadow-normalBias={0.03}
+        shadow-radius={6}
+        shadow-camera-left={-half}
+        shadow-camera-right={half}
+        shadow-camera-top={half}
+        shadow-camera-bottom={-half}
+        shadow-camera-near={1}
+        shadow-camera-far={30}
+      />
+      {shadows && <StaticShadows />}
+      <Environment resolution={256} frames={1} environmentIntensity={0.6}>
+        <color attach="background" args={["#d9d4ca"]} />
+        {lights.map(([x, z]) => (
+          <Lightformer key={`${x}:${z}`} form="rect" intensity={4} position={[x - cx, CEILING - 1.6, z - cz]} rotation-x={Math.PI / 2} scale={[1.2, 0.6, 1]} />
+        ))}
+        <Lightformer intensity={0.8} position={[0, 1.5, half]} rotation-y={Math.PI} scale={[half * 2, 3, 1]} color="#fff8ee" />
+        <Lightformer intensity={0.5} position={[0, 1.5, -half]} scale={[half * 2, 3, 1]} />
       </Environment>
     </>
   );
 }
 
-function Room({ store, layout }: { store: Store; layout: StoreLayout }) {
+/** A loja é estática: calcula as sombras nos primeiros quadros e depois só reaproveita. */
+function StaticShadows() {
+  const frames = useRef(0);
+  useFrame(({ gl }) => {
+    // Alguns quadros a mais, para pegar os produtos que entram depois.
+    if (frames.current > 30) return;
+    frames.current++;
+    setShadowRefresh(gl);
+  });
+  return null;
+}
+
+function setShadowRefresh(gl: THREE.WebGLRenderer) {
+  gl.shadowMap.autoUpdate = false;
+  gl.shadowMap.needsUpdate = true;
+}
+
+/** Oclusão de ambiente, brilho das luzes, cores naturais e antisserrilhado. Desligado nos óculos. */
+function Effects({ quality }: { quality: Quality }) {
+  const inXR = useXR((x) => x.session != null);
+  if (inXR) return null;
+  const high = quality === "alta";
+  return (
+    <EffectComposer multisampling={0} enableNormalPass={false}>
+      <N8AO aoRadius={1.2} distanceFalloff={0.5} intensity={high ? 4 : 3} quality={high ? "high" : "performance"} halfRes={!high} />
+      <Bloom luminanceThreshold={1} luminanceSmoothing={0.2} intensity={high ? 0.45 : 0.3} mipmapBlur />
+      <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+      <Vignette offset={0.35} darkness={0.35} />
+      <SMAA />
+    </EffectComposer>
+  );
+}
+
+function Room({ layout, reflections }: { layout: StoreLayout; reflections: boolean }) {
   const { minX, maxX, minZ, maxZ } = layout.bounds;
   const w = maxX - minX;
   const d = maxZ - minZ;
   const cx = (minX + maxX) / 2;
   const cz = (minZ + maxZ) / 2;
   const floor = useMemo(() => {
-    const t = floorTexture().clone();
+    const t = tileTexture().clone();
     t.repeat.set(w / 1.2, d / 1.2);
     t.needsUpdate = true;
     return t;
   }, [w, d]);
   const ceiling = useMemo(() => {
     const t = ceilingTexture().clone();
-    t.repeat.set(w / 1.25, d / 1.25);
+    t.repeat.set(w / 0.625, d / 0.625);
     t.needsUpdate = true;
     return t;
   }, [w, d]);
-  const banner = useMemo(() => signTexture(store.logoUrl && store.logoUrl.length <= 4 ? store.logoUrl : "🛒", store.name), [store]);
 
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, 0, cz]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, 0, cz]} receiveShadow>
         <planeGeometry args={[w, d]} />
-        <meshStandardMaterial map={floor} roughness={0.35} metalness={0.05} />
+        {reflections ? (
+          <MeshReflectorMaterial
+            map={floor}
+            mirror={0}
+            blur={[600, 200]}
+            resolution={1024}
+            mixBlur={1.5}
+            mixStrength={0.35}
+            mixContrast={1}
+            depthScale={1}
+            minDepthThreshold={0.6}
+            maxDepthThreshold={1.4}
+            roughness={0.45}
+            metalness={0}
+          />
+        ) : (
+          <meshStandardMaterial map={floor} roughness={0.22} metalness={0.02} />
+        )}
       </mesh>
       <mesh rotation={[Math.PI / 2, 0, 0]} position={[cx, CEILING, cz]}>
         <planeGeometry args={[w, d]} />
-        <meshBasicMaterial map={ceiling} color="#e9e7e2" />
+        <meshStandardMaterial map={ceiling} color="#f4f3ef" roughness={0.95} />
       </mesh>
-      {/* Paredes */}
-      <Wall position={[cx, CEILING / 2, minZ]} size={[w, CEILING]} rotationY={0} color="#f6f3ea" />
-      <Wall position={[cx, CEILING / 2, maxZ]} size={[w, CEILING]} rotationY={Math.PI} color="#f6f3ea" />
-      <Wall position={[minX, CEILING / 2, cz]} size={[d, CEILING]} rotationY={Math.PI / 2} color="#eef3ec" />
-      <Wall position={[maxX, CEILING / 2, cz]} size={[d, CEILING]} rotationY={-Math.PI / 2} color="#eef3ec" />
-      {/* Faixa verde na base das paredes */}
-      <mesh position={[cx, 0.25, minZ + 0.01]}>
-        <planeGeometry args={[w, 0.5]} />
-        <meshStandardMaterial color="#0f9d58" />
-      </mesh>
-      <mesh position={[cx, 2.7, minZ + 0.02]}>
-        <planeGeometry args={[4.2, 1.3]} />
-        <meshBasicMaterial map={banner} transparent toneMapped={false} />
-      </mesh>
+      {/* Paredes: fundo e laterais (a frente é a fachada de vidro) */}
+      <Wall position={[cx, CEILING / 2, minZ]} size={[w, CEILING]} rotationY={0} />
+      <Wall position={[minX, CEILING / 2, cz]} size={[d, CEILING]} rotationY={Math.PI / 2} />
+      <Wall position={[maxX, CEILING / 2, cz]} size={[d, CEILING]} rotationY={-Math.PI / 2} />
     </group>
   );
 }
 
-function Wall({ position, size, rotationY, color }: { position: [number, number, number]; size: [number, number]; rotationY: number; color: string }) {
-  return (
-    <mesh position={position} rotation={[0, rotationY, 0]}>
-      <planeGeometry args={size} />
-      <meshStandardMaterial color={color} roughness={0.9} />
-    </mesh>
-  );
-}
-
-const tagGeo = new THREE.PlaneGeometry(0.26, 0.1);
-
-/** Todas as unidades de um produto numa gôndola, desenhadas de uma vez (instancing). */
-function ProductInstances({ product, slots, onPick }: { product: Product; slots: Slot[]; onPick: (e: ThreeEvent<MouseEvent>) => void }) {
-  const parts = useMemo(() => packageParts(product), [product]);
-  const matrices = useMemo(() => {
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const one = new THREE.Vector3(1, 1, 1);
-    return slots.map((s) => {
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (s.facing * Math.PI) / 2);
-      return m.compose(new THREE.Vector3(s.x, s.y + 0.002, s.z), q, one).clone();
-    });
-  }, [slots]);
-  return (
-    <>
-      {parts.map((part, i) => (
-        <InstancedPart key={i} geometry={part.geometry} material={part.material} matrices={matrices} onPick={onPick} />
-      ))}
-    </>
-  );
-}
-
-function InstancedPart({ geometry, material, matrices, onPick }: {
-  geometry: THREE.BufferGeometry;
-  material: THREE.Material | THREE.Material[];
-  matrices: THREE.Matrix4[];
-  onPick: (e: ThreeEvent<MouseEvent>) => void;
-}) {
-  const ref = useRef<THREE.InstancedMesh>(null);
-  useLayoutEffect(() => {
-    const mesh = ref.current;
-    if (!mesh) return;
-    matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
-  }, [matrices]);
-  return (
-    <instancedMesh
-      ref={ref}
-      args={[geometry, material, matrices.length]}
-      onClick={onPick}
-      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = "pointer"; }}
-      onPointerOut={() => { document.body.style.cursor = ""; }}
-    />
-  );
-}
-
-/** Sombras de contato falsas sob gôndolas e bancas, para tudo "pisar" no chão. */
-function ContactShadows({ layout }: { layout: StoreLayout }) {
-  const tex = useMemo(() => shadowTexture(), []);
-  const items = [
-    ...layout.gondolas.map((g) => ({ x: g.x, z: 0, w: GONDOLA.depth + 0.9, d: GONDOLA.length + 0.9 })),
-    ...(layout.produce?.tables ?? []).map((t) => ({ x: t.x, z: t.z, w: TABLE.width + 0.7, d: TABLE.depth + 0.7 })),
-  ];
-  return (
-    <>
-      {items.map((it, i) => (
-        <mesh key={i} position={[it.x, 0.004, it.z]} rotation={[-Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[it.w, it.d]} />
-          <meshBasicMaterial map={tex} transparent depthWrite={false} />
-        </mesh>
-      ))}
-    </>
-  );
-}
-
-const GondolaMesh = memo(function GondolaMesh({
-  gondola,
-  products,
-  onPick,
-}: {
-  gondola: StoreLayout["gondolas"][number];
-  products: Map<string, Product>;
-  onPick: (p: Product) => void;
-}) {
-  const accent = brandColor(gondola.category.name);
-  const sign = useMemo(() => signTexture(gondola.category.emoji, gondola.category.name, accent), [gondola.category, accent]);
-
-  const byProduct = useMemo(() => {
-    const m = new Map<string, Slot[]>();
-    for (const sl of gondola.slots) m.set(sl.productId, [...(m.get(sl.productId) ?? []), sl]);
-    return m;
-  }, [gondola.slots]);
-
-  // Etiqueta de preço só na primeira frente de cada produto em cada prateleira.
-  const tags = useMemo(() => {
-    return gondola.slots.filter((s, i, all) => {
-      const prev = all[i - 1];
-      return !prev || prev.productId !== s.productId || prev.y !== s.y || prev.facing !== s.facing;
-    });
-  }, [gondola.slots]);
-
-  function pick(e: ThreeEvent<MouseEvent>, id: string) {
-    // Arrastar para olhar também solta um clique; só conta toque curto.
-    if (e.delta > 8) return;
-    e.stopPropagation();
-    const p = products.get(id);
-    if (p) onPick(p);
-  }
-
-  return (
-    <group>
-      {/* Estrutura */}
-      <mesh position={[gondola.x, GONDOLA.height / 2, 0]}>
-        <boxGeometry args={[0.06, GONDOLA.height, GONDOLA.length]} />
-        <meshStandardMaterial color="#d9dde2" metalness={0.3} roughness={0.5} />
-      </mesh>
-      <mesh position={[gondola.x, 0.05, 0]}>
-        <boxGeometry args={[GONDOLA.depth, 0.1, GONDOLA.length]} />
-        <meshStandardMaterial color="#3d4650" />
-      </mesh>
-      {SHELF_HEIGHTS.map((y) => (
-        <mesh key={y} position={[gondola.x, y - 0.015, 0]}>
-          <boxGeometry args={[GONDOLA.depth, 0.03, GONDOLA.length]} />
-          <meshStandardMaterial color="#eef0f2" metalness={0.4} roughness={0.35} />
-        </mesh>
-      ))}
-      {[GONDOLA.length / 2, -GONDOLA.length / 2].map((z) => (
-        <mesh key={z} position={[gondola.x, GONDOLA.height / 2, z]}>
-          <boxGeometry args={[GONDOLA.depth + 0.04, GONDOLA.height, 0.05]} />
-          <meshStandardMaterial color={accent} roughness={0.6} />
-        </mesh>
-      ))}
-      {/* Placas da categoria: na ponta do corredor e no meio, legíveis dos dois lados */}
-      <Sign map={sign} position={[gondola.x, 2.75, GONDOLA.length / 2 - 0.4]} rotationY={0} size={[1.8, 0.56]} />
-      <Sign map={sign} position={[gondola.x, 2.75, 0]} rotationY={Math.PI / 2} size={[1.8, 0.56]} />
-
-      {/* Produtos */}
-      {[...byProduct].map(([id, slots]) => {
-        const p = products.get(id);
-        return p ? <ProductInstances key={id} product={p} slots={slots} onPick={(e) => pick(e, id)} /> : null;
-      })}
-      {/* Fundo perfurado da gôndola */}
-      {[1, -1].map((f) => (
-        <mesh key={f} position={[gondola.x + f * 0.035, GONDOLA.height / 2 + 0.05, 0]} rotation={[0, (f * Math.PI) / 2, 0]}>
-          <planeGeometry args={[GONDOLA.length, GONDOLA.height - 0.1]} />
-          <meshStandardMaterial color="#e4e7ea" roughness={0.7} />
-        </mesh>
-      ))}
-      {tags.map((s, i) => {
-        const p = products.get(s.productId)!;
-        return (
-          <mesh
-            key={`t${i}`}
-            geometry={tagGeo}
-            position={[s.x + s.facing * 0.157, s.y - 0.05, s.z - SLOT_WIDTH / 2 + 0.14]}
-            rotation={[0, (s.facing * Math.PI) / 2, 0]}
-            onClick={(e) => pick(e, p.id)}
-          >
-            <meshBasicMaterial map={priceTagTexture(p)} toneMapped={false} />
-          </mesh>
-        );
-      })}
-    </group>
-  );
-});
-
-/** Placa pendurada: duas faces costas com costas, para o texto nunca aparecer espelhado. */
-function Sign({ map, position, rotationY, size }: { map: THREE.Texture; position: [number, number, number]; rotationY: number; size: [number, number] }) {
+function Wall({ position, size, rotationY }: { position: [number, number, number]; size: [number, number]; rotationY: number }) {
   return (
     <group position={position} rotation={[0, rotationY, 0]}>
-      {[0, Math.PI].map((r) => (
-        <mesh key={r} rotation={[0, r, 0]} position={[0, 0, r ? -0.005 : 0.005]}>
-          <planeGeometry args={size} />
-          <meshBasicMaterial map={map} transparent toneMapped={false} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-function Checkout({ layout, onCheckout }: { layout: StoreLayout; onCheckout: () => void }) {
-  const sign = useMemo(() => signTexture("💳", "Caixa", "#6d4aff"), []);
-  const { x, z } = layout.checkout;
-  return (
-    <group
-      position={[x, 0, z]}
-      onClick={(e) => {
-        if (e.delta > 8) return;
-        e.stopPropagation();
-        onCheckout();
-      }}
-    >
-      <mesh position={[0, 0.45, 0]}>
-        <boxGeometry args={[0.8, 0.9, 2.2]} />
-        <meshStandardMaterial color="#2f3640" roughness={0.4} />
+      <mesh receiveShadow>
+        <planeGeometry args={size} />
+        <meshStandardMaterial color="#f5f2ea" roughness={0.92} />
       </mesh>
-      <mesh position={[0, 0.91, 0]}>
-        <boxGeometry args={[0.7, 0.02, 2.1]} />
-        <meshStandardMaterial color="#111" roughness={0.8} />
+      {/* Barrado mais escuro e rodapé, que sujam menos */}
+      <mesh position={[0, -size[1] / 2 + 0.6, 0.005]} receiveShadow>
+        <planeGeometry args={[size[0], 1.2]} />
+        <meshStandardMaterial color="#d9e4dc" roughness={0.6} />
       </mesh>
-      <mesh position={[0.1, 1.15, -0.8]}>
-        <boxGeometry args={[0.3, 0.25, 0.05]} />
-        <meshStandardMaterial color="#222" emissive="#3a86ff" emissiveIntensity={0.4} />
+      <mesh position={[0, -size[1] / 2 + 0.06, 0.012]}>
+        <planeGeometry args={[size[0], 0.12]} />
+        <meshStandardMaterial color="#2f6b4a" roughness={0.5} />
       </mesh>
-      <Sign map={sign} position={[0, 2.3, 0]} rotationY={Math.PI / 2} size={[1.4, 0.44]} />
     </group>
   );
 }
@@ -383,9 +267,9 @@ function Checkout({ layout, onCheckout }: { layout: StoreLayout; onCheckout: () 
  * Câmera em primeira pessoa: arrastar para olhar (mouse ou dedo), WASD/setas
  * ou joystick para andar. Colisão com gôndolas e paredes.
  */
-function PlayerControls({ layout, move, nav }: { layout: StoreLayout; move: MoveInput; nav: Navigator }) {
+function PlayerControls({ layout, move, nav, startYaw }: { layout: StoreLayout; move: MoveInput; nav: Navigator; startYaw: number }) {
   const { camera, gl } = useThree();
-  const look = useRef({ yaw: 0, pitch: -0.05 });
+  const look = useRef({ yaw: startYaw, pitch: -0.08 });
   const keys = useRef(new Set<string>());
 
   useEffect(() => {

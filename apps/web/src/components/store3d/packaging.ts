@@ -10,14 +10,15 @@ export interface PackagePart {
   material: THREE.Material | THREE.Material[];
 }
 
-type Shape = "bottle" | "carton" | "pouch" | "flat" | "box" | "can";
+type Shape = "bottle" | "carton" | "pouch" | "flat" | "box" | "can" | "cup";
 
 function shapeFor(p: Product): Shape {
   const n = p.name.toLowerCase();
   if (/leite|suco|creme de leite|bebida l[aá]ctea/.test(n) && (p.unit === "l" || p.unit === "ml" || /\bl\b|litro/.test(p.description))) return "carton";
   if (/lata|cerveja|energ[eé]tico|milho|ervilha|atum|sardinha|extrato/.test(n)) return "can";
   if (p.unit === "l" || p.unit === "ml" || /refrigerante|[aá]gua|[oó]leo|azeite|detergente|kombucha|vinagre|amaciante|shampoo/.test(n)) return "bottle";
-  if (/ovos|queijo.*fatiado|presunto|bandeja/.test(n)) return "flat";
+  if (/iogurte|requeij|margarina|manteiga|doce de leite/.test(n)) return "cup";
+  if (/ovos|queijo.*fatiado|presunto|bandeja|frango|patinho|picanha|lingui[cç]a|carne|bife|costela|alcatra|fil[eé]/.test(n)) return "flat";
   if (/arroz|feij[aã]o|a[cç][uú]car|caf[eé]|farinha|macarr[aã]o|granola|sab[aã]o em p[oó]|biscoito|salgadinho|p[aã]o de forma/.test(n) || p.unit === "kg" || p.unit === "g") return "pouch";
   return "box";
 }
@@ -53,6 +54,8 @@ const geometries = {
   pouch: pouchGeometry(0.2, 0.27, 0.06),
   flat: new THREE.BoxGeometry(0.26, 0.08, 0.13).translate(0, 0.04, 0),
   box: new THREE.BoxGeometry(0.2, 0.28, 0.07).translate(0, 0.14, 0),
+  cup: new THREE.CylinderGeometry(0.05, 0.04, 0.09, 24, 1, true, Math.PI, Math.PI * 2).translate(0, 0.045, 0),
+  cupLid: new THREE.CylinderGeometry(0.052, 0.052, 0.008, 24).translate(0, 0.094, 0),
 };
 
 const capMaterial = new THREE.MeshStandardMaterial({ color: "#f5f5f5", roughness: 0.4 });
@@ -97,6 +100,12 @@ export function packageParts(p: Product): PackagePart[] {
       parts = [
         { geometry: geometries.carton, material: boxMaterials },
         { geometry: geometries.cartonTop, material: side },
+      ];
+      break;
+    case "cup":
+      parts = [
+        { geometry: geometries.cup, material: front },
+        { geometry: geometries.cupLid, material: side },
       ];
       break;
     case "pouch":

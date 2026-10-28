@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Category, Product } from "@mercado/shared";
-import { GONDOLA, buildLayout, collide, findPath } from "./store-layout";
+import { COOLER, GONDOLA, buildLayout, collide, findPath } from "./store-layout";
 
 const cat = (id: string, name = id): Category => ({ id, slug: id, name, emoji: "🛒" });
 const prod = (id: string, categoryId: string, extra: Partial<Product> = {}): Product => ({
@@ -70,6 +70,35 @@ describe("caminho automático", () => {
         expect(collide(layout, x, z, 0.25)).toEqual({ x, z });
       }
       prev = p;
+    }
+  });
+});
+
+describe("balcões refrigerados e pontas de gôndola", () => {
+  const layout = buildLayout(
+    [cat("hortifruti", "Hortifrúti"), cat("mercearia"), cat("laticinios", "Laticínios"), cat("acougue", "Açougue")],
+    [prod("banana", "hortifruti"), prod("arroz", "mercearia"), prod("feijao", "mercearia"), prod("leite", "laticinios"), prod("carne", "acougue")],
+  );
+
+  it("põe laticínios e açougue nos balcões da parede do fundo, não nas gôndolas", () => {
+    expect(layout.gondolas.map((g) => g.category.id)).toEqual(["mercearia"]);
+    expect(layout.coolers.map((c) => c.category.id)).toEqual(["laticinios", "acougue"]);
+    for (const c of layout.coolers) {
+      expect(c.z - COOLER.depth / 2).toBeGreaterThanOrEqual(layout.bounds.minZ);
+      expect(c.slots.every((s) => s.rotY === 0 && Math.abs(s.x - c.x) <= c.length / 2)).toBe(true);
+    }
+  });
+
+  it("tem ponta de gôndola com os produtos em destaque", () => {
+    const ids = new Set(layout.gondolas[0].endcap.map((s) => s.productId));
+    expect(ids).toEqual(new Set(["arroz", "feijao"]));
+  });
+
+  it("chega a todas as seções, inclusive aos balcões, sem atravessar nada", () => {
+    expect(layout.stops.map((s) => s.id)).toEqual(["entrada", "hortifruti", "mercearia", "laticinios", "acougue", "caixa"]);
+    for (const s of layout.stops) {
+      expect(collide(layout, s.x, s.z)).toEqual({ x: s.x, z: s.z });
+      expect(findPath(layout, layout.entrance, s).at(-1)).toEqual(s);
     }
   });
 });

@@ -6,6 +6,8 @@ import { ORDER_STATUS_LABEL, formatBRL, nextStatus, type Order, type Product } f
 import { api, useApp, useHydrated } from "@/lib/app-store";
 import { Empty, StatusBadge, Thumb, formatSlot } from "@/components/ui";
 import { Gate, run } from "@/components/gate";
+import { sampleCatalog } from "@/lib/demo-data";
+import { PHOTO_CREDIT, firstPhoto, searchPhotos, type PhotoResult } from "@/lib/product-photos";
 
 type Tab = "pedidos" | "produtos" | "resumo";
 
@@ -53,6 +55,8 @@ function StorePanel() {
             </select>
           </label>
         )}
+        <Link href={`/loja/${store.slug}`} className="btn-ghost text-sm">Ver loja</Link>
+        <Link href={`/loja/${store.slug}/3d`} className="btn-ghost text-sm">🕶️ Ver em 3D</Link>
         <Link href="/painel/nova-loja" className="btn-ghost text-sm">+ Nova loja</Link>
       </div>
       {store.status !== "approved" && (
@@ -161,7 +165,10 @@ function ProductsTable({ storeId }: { storeId: string }) {
   const products = useMemo(() => s.products.filter((p) => p.storeId === storeId), [s, storeId]);
   return (
     <div className="space-y-3">
-    <NewProductForm storeId={storeId} />
+    <div className="flex flex-wrap gap-2">
+      <NewProductForm storeId={storeId} />
+      {products.length < 10 && <SampleCatalogButton storeId={storeId} existing={products} />}
+    </div>
     {products.length === 0 && <p className="text-sm text-muted">Nenhum produto cadastrado ainda.</p>}
     <div className="card overflow-x-auto">
       <table className="w-full min-w-[640px] text-sm">
@@ -259,7 +266,7 @@ function NewProductForm({ storeId }: { storeId: string }) {
   }
 
   return (
-    <form onSubmit={submit} className="card grid gap-3 p-4 sm:grid-cols-6">
+    <form onSubmit={submit} className="card grid basis-full gap-3 p-4 sm:grid-cols-6">
       <label className="space-y-1 text-sm sm:col-span-3">
         <span>Nome</span>
         <input className="input" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
@@ -272,6 +279,7 @@ function NewProductForm({ storeId }: { storeId: string }) {
         <span>Ícone ou URL da foto</span>
         <input className="input" placeholder="🍎" value={f.emoji} onChange={(e) => setF({ ...f, emoji: e.target.value })} />
       </label>
+      <PhotoSearch initial={f.name} onPick={(url) => setF({ ...f, emoji: url })} />
       <label className="space-y-1 text-sm sm:col-span-2">
         <span>Categoria</span>
         <select className="input" value={f.categoryId} onChange={(e) => setF({ ...f, categoryId: e.target.value })}>
@@ -297,6 +305,124 @@ function NewProductForm({ storeId }: { storeId: string }) {
         <button type="button" className="btn-ghost" onClick={() => setOpen(false)}>✕</button>
       </div>
     </form>
+  );
+}
+
+/** Procura a foto da embalagem original pelo nome ou pelo código de barras. */
+function PhotoSearch({ initial, onPick }: { initial: string; onPick: (url: string) => void }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<PhotoResult[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function search() {
+    const term = (q || initial).trim();
+    if (!term) return;
+    setBusy(true);
+    setError("");
+    try {
+      setResults(await searchPhotos(term));
+    } catch {
+      setError("Não foi possível buscar agora. Tente de novo ou cole o endereço da foto.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-xl bg-primary-soft/50 p-3 text-sm sm:col-span-6">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-48 flex-1 space-y-1">
+          <span>Foto da embalagem: nome ou código de barras</span>
+          <input
+            className="input"
+            placeholder={initial || "ex.: café pilão 500g ou 7896089012453"}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void search(); } }}
+          />
+        </label>
+        <button type="button" className="btn-ghost" onClick={() => void search()} disabled={busy}>
+          {busy ? "Buscando…" : "📷 Buscar foto"}
+        </button>
+      </div>
+      {error && <p className="text-danger">{error}</p>}
+      {results && results.length === 0 && <p className="text-muted">Nenhuma foto encontrada. Tente outro nome ou o código de barras.</p>}
+      {results && results.length > 0 && (
+        <>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {results.map((r) => (
+              <button
+                type="button"
+                key={r.imageUrl}
+                onClick={() => { onPick(r.imageUrl); setResults(null); }}
+                className="w-24 shrink-0 rounded-lg border border-border bg-white p-1 text-left text-xs hover:border-primary"
+                title={`${r.name} ${r.brand}`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={r.imageUrl} alt={r.name} className="h-20 w-full object-contain" loading="lazy" />
+                <span className="line-clamp-2">{r.name || "Sem nome"}{r.brand && ` · ${r.brand}`}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted">{PHOTO_CREDIT}. Toque na foto certa para usar.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Copia o catálogo de exemplo para a loja, buscando a foto da embalagem de cada
+ * produto, para o lojista ver a loja 3D completa sem cadastrar tudo à mão.
+ */
+function SampleCatalogButton({ storeId, existing }: { storeId: string; existing: Product[] }) {
+  const s = useApp();
+  const [progress, setProgress] = useState<string | null>(null);
+
+  async function fill() {
+    if (!confirm("Adicionar uns 25 produtos de exemplo (com fotos das embalagens) a esta loja? Você pode editar ou desativar depois.")) return;
+    const bySlug = new Map(s.categories.map((c) => [c.slug, c.id]));
+    const have = new Set(existing.map((p) => p.name.toLowerCase()));
+    const todo = sampleCatalog.filter((p) => !have.has(p.name.toLowerCase()) && bySlug.has(p.categorySlug));
+    let done = 0;
+    let photos = 0;
+    setProgress(`0 de ${todo.length}`);
+    try {
+      // Em pequenos lotes, para não sobrecarregar a busca de fotos.
+      for (let i = 0; i < todo.length; i += 4) {
+        await Promise.all(
+          todo.slice(i, i + 4).map(async (p) => {
+            const photo = p.search ? await firstPhoto(p.search) : null;
+            if (photo) photos++;
+            await api.createProduct({
+              storeId,
+              categoryId: bySlug.get(p.categorySlug)!,
+              name: p.name,
+              description: p.description,
+              priceCents: p.priceCents,
+              unit: p.unit,
+              imageUrl: photo ?? p.emoji,
+              stock: 30,
+              active: true,
+            });
+            done++;
+            setProgress(`${done} de ${todo.length}`);
+          }),
+        );
+      }
+      alert(`Pronto: ${done} produtos adicionados, ${photos} com foto da embalagem. ${PHOTO_CREDIT}.`);
+    } catch (err) {
+      alert(`Parou em ${done} de ${todo.length}: ${(err as Error).message}`);
+    } finally {
+      setProgress(null);
+    }
+  }
+
+  return (
+    <button className="btn-ghost" onClick={() => void fill()} disabled={progress !== null}>
+      {progress ? `Adicionando… ${progress}` : "✨ Preencher com catálogo de exemplo"}
+    </button>
   );
 }
 

@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { cartItemCount } from "@mercado/shared";
 import { api, useApp, useHydrated, type AppState } from "@/lib/app-store";
 
@@ -15,9 +15,19 @@ export function Header() {
   const router = useRouter();
   const count = hydrated ? cartItemCount(s.cart) : 0;
   const addressKey = (a: { id?: string; label: string }) => a.id ?? a.label;
+  const ref = useRef<HTMLElement>(null);
+
+  // Telas de tela cheia (loja 3D) usam a altura do cabeçalho.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => document.documentElement.style.setProperty("--header-h", `${el.offsetHeight}px`));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   return (
-    <header className="sticky top-0 z-20 border-b border-border bg-surface/90 backdrop-blur">
+    <header ref={ref} className="sticky top-0 z-20 border-b border-border bg-surface/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-3">
         <Link href="/" className="flex items-center gap-2 font-bold tracking-tight">
           <Image src="/icon.svg" alt="" width={32} height={32} priority />
